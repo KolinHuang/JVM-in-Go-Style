@@ -28,6 +28,19 @@ go 命令行希望所有的Go源代码都被放在一个工作空间中。所谓
 /Users/huangyucai/go
 ```
 
+> 补充：由于在搜索class文件步骤中出现了错误，于是我把代码都放在了目录/Users/huangyucai/golang下，然后将环境变量配置为
+>
+> `export GOROOT=/Users/huangyucai/go
+> export GOBIN=$GOROOT/bin
+> export GOPATH=/User/huangyucai/golang
+> export PATH=$PATH:$GOBIN`
+>
+> 其中GOROOT代表go的根路径
+>
+> GOPATH代表工作空间
+>
+> 具体为什么，我还不清楚，可能与go的包管理机制有关，后面有时间再研究吧。
+
 如果要自定义工作空间，可使用以下命令：
 
 ```shell
@@ -108,44 +121,13 @@ func init() {
 flag.Parse()
 ```
 
-本实现中，处理命令行的函数
-
-```go
-func parseCmd() *Cmd {
-	//创建一个Cmd结构体对象
-	cmd := &Cmd{}
-	//如果Parse函数解析失败，就会调用printUsage函数把命令的用法打印到控制台
-	flag.Usage = printUsage
-	//将help和？这两个参数绑定到变量&cmd.helpFlag，初值为false，信息为print help message
-	//这样如果在命令行中出现help和?参数，说明需要打印帮助信息
-	flag.BoolVar(&cmd.helpFlag, "help", false, "print help message-打印帮助信息")
-	flag.BoolVar(&cmd.helpFlag, "? ", false, "print help message-打印帮助信息")
-	flag.BoolVar(&cmd.versionFlag, "version", false, "print version and exit-打印命令版本")
-	flag.StringVar(&cmd.clspath, "classpath", "", "classpath-指定类文件路径")
-	flag.StringVar(&cmd.clspath, "cp", "", "classpath-指定类文件路径")
-	//当所有flag定义完毕，调用此方法来解析命令行参数到flags中
-	flag.Parse()
-	args := flag.Args()
-	if len(args) > 0 {
-		cmd.class = args[0]
-		cmd.args = args[1: ]
-	}
-	return cmd
-}
-
-func printUsage() {
-	fmt.Println("Usage:")
-	fmt.Printf("%s [-options] class [args...]\n", os.Args[0])
-	fmt.Println("Options:")
-	flag.PrintDefaults()
-}
-```
+本实现中，处理命令行的函数为printUsage
 
 printUsage函数会在flag.Parse解析失败后被调用，显示命令的用法，如果解析成功，命令行参数将被解析到结构体对应的变量中。
 
 
 
-### 1.4 测试命令行工具
+### 1.4 测试
 
 在chap01目录下编写main.go文件：
 
@@ -286,7 +268,7 @@ func newEntry(path string) Entry {
 
 readClass()函数的参数是class文件的相对路径，路径之间用“/”分隔，文件名有.class后缀。返回值是读到的字节数据、最终定位到class文件的Entry以及错误信息。
 
-newEntry()函数根据参数创建不同类型的Entry实例。正如2.1结尾说的，类路径可以有多种形式：
+newEntry()函数根据-clspath参数创建不同类型的Entry实例。正如2.1结尾说的，类路径可以有多种形式：
 
 1. JAR、ZIP文件——>关键词：.JAR、.ZIP后缀
 2. 含分隔符的多个文件和目录——>关键词：“:”分隔符
@@ -307,189 +289,114 @@ newEntry()函数根据参数创建不同类型的Entry实例。正如2.1结尾�
 
 和Java语言不同，Go结构体不需要显式地实现接口，只要方法匹配即可。Go没有专门的构造函数。本实现统一使用new开头的函数来创建结构体实例。
 
-1. DirEntry实现：
+1. **目录形式的类路径**，只需要有一个绝对路径能够表示其位置即可，因此DirEntry的结构体只需要一个属性来存放绝对路径。在读取类文件时，只需要将指定的类和传入的类路径参数拼接，就能得到类文件的完整路径。
+2. 同理，**压缩文件形式的类路径**，也只需要一个绝对路径来表示其位置。只不过在读取类文件的时候，需要用到`"archive/zip"`工具包来遍历Zip文件中的class文件，找到符合要求的class文件。
+3. **多个文件和目录形式的类路径**，由于是由多个类路径组成，因此需要一个数组来存放这些类路径，数组元素的类型设置为[]Entry，可以聚合4种形式的类路径。在读取类路径时，按照entry的类型调用各自的方法，是目录形式的就按1所说的读取类文件，是压缩文件形式的就按2所说的读取类文件。
+4. **通配符形式的类路径**和第3个无本质区别，但是有一点，通配符形式的类路径无法读取子目录下的类文件，因此在遍历过程中遇到目录之后需要跳过。
 
-   ```go
-   package classpath
-   
-   import(
-   	"io/ioutil"
-   	"path/filepath"
-   )
-   
-   type DirEntry struct {
-   	absDir	string
-   }
-   
-   //返回目录形式类路径项实例
-   func newDirEntry(path string) *DirEntry {
-   	//Abs函数返回路径的绝对路径表示
-   	absDir, err := filepath.Abs(path)
-   	if err != nil {
-   		//当调用了panic函数，此函数的执行将会停止
-   		panic(err)
-   	}
-   	//返回DirEntry实例
-   	return &DirEntry{absDir}
-   }
-   
-   func (self *DirEntry) readClass(className string) ([]byte, Entry, error){
-   	//把目录和class文件名拼成一个完整的路径
-   	fileName := filepath.Join(self.absDir, className)
-   	//读取class文件的内容
-   	data, err := ioutil.ReadFile(fileName)
-   	return data, self, err
-   }
-   
-   func (self *DirEntry) String() string {
-   	return self.absDir
-   }
-   
-   ```
 
-2. ZipEntry实现：
 
-   ```go
-   package classpath
-   
-   import(
-   	"archive/zip"	//提供读取和写入ZIP压缩包的操作
-   	"errors"
-   	"io/ioutil"	//IO工具包，提供一些IO操作
-   	"path/filepath"
-   )
-   
-   type ZipEntry struct {
-   	absPath string	//存放JAR/ZIP文件的绝对路径
-   }
-   
-   func newZipEntry(path string) *ZipEntry {
-   	absPath, err := filepath.Abs(path)
-   	if err != nil {
-   		panic(err)
-   	}
-   	return &ZipEntry{absPath}
-   }
-   
-   //从ZIP文件中提取class文件
-   func (self *ZipEntry) readClass(className string) ([]byte, Entry, error) {
-   	//OpenReader will open the Zip file specified by name and return a ReadCloser.
-   	r, err := zip.OpenReader(self.absPath)
-   	if err != nil {
-   		return nil, nil, err
-   	}
-   	//defer类似于Java中的finally语句块，在函数返回之前，或者说在return语句后执行。
-   	defer r.Close()
-   	//遍历压缩包内的文件
-   	for _, f := range r.File {
-   		//如果找到了className对应的class文件，就打开并读取内容，然后返回
-   		if f.Name == className {
-   			//打开文件
-   			rc, err := f.Open()
-   			if err != nil {//打开失败，返回错误
-   				return nil, nil, err
-   			}
-   			defer rc.Close()
-   			//读取文件所有数据，返回字节数组
-   			data, err := ioutil.ReadAll(rc)
-   			if err != nil {//读取失败
-   				return nil, nil, err
-   			}
-   			return data, self, nil
-   		}
-   	}
-   	return nil, nil, errors.New("class not found: " + className)
-   
-   }
-   
-   func (self *ZipEntry) String() string {
-   	return self.absPath
-   }
-   
-   ```
+#### 2.3.3 Classpath
 
-3. CompositeEntry的实现：
+创建classpath结构体，存放三种类路径。
 
-   ```go
-   package classpath
-   
-   import(
-   	"errors"
-   	"strings"
-   )
-   /**
-   多个Entry构成的类路径
-    */
-   type CompositeEntry []Entry
-   //将路径列表参数按分隔符分成小路径，然后将每个小路径转化为具体的Entry实例
-   func newCompositeEntry(pathList string) CompositeEntry {
-   	compositeEntry := []Entry{}
-   	for _, path := range strings.Split(pathList, pathListSepatator) {
-   		//调用Entry接口中的newEntry函数
-   		entry := newEntry(path)
-   		compositeEntry = append(compositeEntry, entry)
-   	}
-   	return compositeEntry
-   }
-   
-   func (self CompositeEntry) readClass(className string) ([]byte, Entry, error) {
-   	for _, entry := range self {
-   		data, from, err := entry.readClass(className)
-   		if err == nil {
-   			return data, from, nil
-   		}
-   	}
-   	return nil, nil, errors.New("class not found: " + className)
-   }
-   //调用每一个子路径的String方法，然后把得到的字符串用路径分隔符拼接起来即可
-   func (self CompositeEntry) String() string {
-   	strs := make([]string, len(self))
-   
-   	for i, entry := range self {
-   		strs[i] = entry.String()
-   	}
-   	return strings.Join(strs, pathListSepatator)
-   }
-   ```
+```go
+type Classpath struct {
+	bootClasspath	Entry	//启动类路径
+	extClasspath	Entry	//扩展类路径
+	userClasspath	Entry	//用户类路径
+}
+```
 
-4. WildcardEntry实现：
+前面提过，我们利用命令行方式来指定以上三种类路径的加载路径，那就需要将命令行参数`-Xjre`和`-clspath`对应的值解析成类路径Entry的形式。其中，启动类路径是`xx/../jre/lib/*`，扩展类路径是`xx/../jre/lib/ext/*`
 
-   ```go
-   package classpath
-   
-   import(
-   	"os"
-   	"path/filepath"
-   	"strings"
-   )
-   //WildcardEntry实际上也是CompositeEntry类型的
-   func newWildcardEntry(path string) CompositeEntry {
-   	baseDir := path[: len(path) - 1]	//删除"*"号
-   	compositeEntry := []Entry{}
-   	//匿名函数
-   	walkFn := func(path string, info os.FileInfo, err error) error {
-   		if err != nil {
-   			return err
-   		}
-   		//通配符类路径不能递归匹配子目录下的JAR文件
-   		if info.IsDir() && path != baseDir {
-   			return filepath.SkipDir
-   		}
-   		//找出JAR文件
-   		if strings.HasSuffix(path, ".jar") ||
-   			strings.HasSuffix(path,".JAR") {
-   			jarEntry := newZipEntry(path)
-   			compositeEntry = append(compositeEntry, jarEntry)
-   		}
-   		return nil
-   	}
-   	//遍历baseDir，将所有JAR文件创建为ZipEntry，放入数组compositeEntry中
-   	//Walk walks the file tree rooted at root, calling walkFn for each file
-   	//or directory in the tree, including root.
-   	filepath.Walk(baseDir, walkFn)
-   	return compositeEntry
-   }
-   ```
+举个例子：
 
-   
+在执行java命令时传递了参数`-Xjre /User/hyc/JAVA/jre`，那么我们就需要根据路径`/User/hyc/JAVA/jre`解析出启动类路径和扩展类路径。
+
+1. 首先要判断此路径是否存在，用到了os包下的`Stat()`函数来查看目录状态和`isExist()`函数来判断目录是否存在。
+2. 如果路径存在，那我们就可以直接返回此路径作为jre路径进行进一步解析；如果路径不存在，我们就要使用默认的jre路径了，本实现给了2个途径获取，一个是当前目录下查找jre，一个是到系统环境变量`JAVA_HOME`表示的目录下查找jre。如果都没找到，就中断方法，抛出error。
+3. 假设我们找到了jre路径，就将此路径与`/lib/*`拼接，创建启动类路径Entry；再将此路径与`/lib/ext/*`拼接，创建扩展类路径Entry。
+4. 用户类路径Entry的创建过程比较简单，如果用户没有指定`-clspath`参数，我们就用当前目录作为用户类路径。
+
+
+
+**在读取类文件时，按照双亲委派模型，我们优先从启动类路径加载，然后再从扩展类路径加载，最后在用户类路径加载类文件。**
+
+
+
+至此，整个类路径的查找和解析过程已经实现了，接下来测试一下！
+
+
+
+### 2.4 测试
+
+修改main.go如下：
+
+```go
+...
+func startJVM(cmd *Cmd){
+	clsp := classpath.Parse(cmd.Xjre, cmd.clspath)
+	fmt.Printf("classpath: %v class: %v args: %v\n", clsp, cmd.class, cmd.args)
+	className := strings.Replace(cmd.class,".","/",-1)
+	classData, _, err := clsp.ReadClass(className)
+	if err != nil {
+		fmt.Printf("Could not find or load main class %s\n", cmd.class)
+		return
+	}
+	fmt.Printf("class data: %v\n", classData)
+}
+```
+
+运行命令`go install ./jvmgo/chap02`
+
+![image-20210107202738898](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210107202738898.png)
+
+报错：
+
+```shell
+jvmgo/chap02/main.go:5:2: cannot find package "." in:
+	/Users/huangyucai/go/src/vendor/jvmgo/chap02/classpath
+```
+
+经过排查，发现是编译器找不到`/jvm/chap02/classpath`包。
+
+翻看博客，猜测可能是环境变量配错了，将环境变量修改为
+
+```shell
+export GOROOT=/Users/huangyucai/go
+export GOBIN=$GOROOT/bin
+export GOPATH=/User/huangyucai/golang
+export PATH=$PATH:$GOBIN
+```
+
+然后将jvmgo文件夹移动至在`/User/huangyucai/golang`目录下，再次运行命令`go install ./jvmgo/chap02`，运行成功。
+
+接下来测试一下能否查找到本机jre目录下的java.lang.Object类文件。本机的jre路径是：
+
+```shell
+/Library/Java/JavaVirtualMachines/jdk1.8.0_201.jdk/Contents/Home/jre
+```
+
+执行命令：`chap02 -Xjre /Library/Java/JavaVirtualMachines/jdk1.8.0_201.jdk/Contents/Home/jre java.lang.Object`
+
+结果如下：
+
+![image-20210107205154169](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210107205154169.png)
+
+成功读取到了java.lang.Object类文件的字节码。
+
+
+
+### 小结
+
+首先本章套用了组合模式来设计统一的类路径表示，定制了接口Entry以及其4种实现。
+
+然后利用`-Xjre`参数来指定启动类加载路径和扩展类加载路径，利用`-clspath`参数来指定用户类加载路径。根据三种类加载路径的要求对命令行参数传递进来的路径字符串进行解析，转换成绝对路径。
+
+最后通过命令行传递的主类名按双亲委派模型查找类文件，并读取类文件。
+
+
+
+## 3 解析class文件
 

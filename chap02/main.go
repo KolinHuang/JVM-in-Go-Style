@@ -1,5 +1,10 @@
 package main
-import "fmt"
+
+import (
+	"fmt"
+	"jvmgo/chap02/classpath"
+	"strings"
+)
 
 func main() {
 	cmd := parseCmd()
@@ -15,7 +20,13 @@ func main() {
 }
 
 func startJVM(cmd *Cmd){
-	fmt.Println("JVM start running...")
-	fmt.Printf("classpath: %s class: %s args: %v\n",
-		cmd.clspath, cmd.class, cmd.args)
+	clsp := classpath.Parse(cmd.Xjre, cmd.clspath)
+	fmt.Printf("classpath: %v class: %v args: %v\n", clsp, cmd.class, cmd.args)
+	className := strings.Replace(cmd.class,".","/",-1)
+	classData, _, err := clsp.ReadClass(className)
+	if err != nil {
+		fmt.Printf("Could not find or load main class %s\n", cmd.class)
+		return
+	}
+	fmt.Printf("class data: %v\n", classData)
 }

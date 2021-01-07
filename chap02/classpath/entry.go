@@ -1,8 +1,8 @@
 package classpath
 
 import(
-"os"
-"strings"
+	"os"
+	"strings"
 )
 
 //定义路径分隔符常量，":"
