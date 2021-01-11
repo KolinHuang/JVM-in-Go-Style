@@ -28,7 +28,7 @@ go 命令行希望所有的Go源代码都被放在一个工作空间中。所谓
 /Users/huangyucai/go
 ```
 
-> 补充：由于在搜索class文件步骤中出现了错误，于是我把代码都放在了目录/Users/huangyucai/golang下，然后将环境变量配置为
+> 2020-1-7-21:12补充：由于在搜索class文件步骤中出现了错误，于是我把代码都放在了目录/Users/huangyucai/golang下，然后将环境变量配置为
 >
 > `export GOROOT=/Users/huangyucai/go
 > export GOBIN=$GOROOT/bin
@@ -359,7 +359,7 @@ jvmgo/chap02/main.go:5:2: cannot find package "." in:
 	/Users/huangyucai/go/src/vendor/jvmgo/chap02/classpath
 ```
 
-经过排查，发现是编译器找不到`/jvm/chap02/classpath`包。
+经过排查，发现是编译器找不到`jvmgo/chap02/classpath`包。
 
 翻看博客，猜测可能是环境变量配错了，将环境变量修改为
 
@@ -399,4 +399,101 @@ export PATH=$PATH:$GOBIN
 
 
 ## 3 解析class文件
+
+### 3.1 class文件结构
+
+
+
+构成class文件的基本数据单位是字节，可以把整个class文件当成一个字节流来处理。Java虚拟机规范定义了u1, u2, u4, u8四种数据类型来表示1、2、4和8字节无符号数，连续多个字节构成的数据按大端格式存储（高位在前，低位在后）。以上四种数据类型分别对应Go语言的uint8、uint16、uint32和uint64类型。
+
+Class文件中还用了一种称为“表”的数据类型来表示数据。表是由多个无符号数或者其他表作为数据项构成的复合数据类型，所有表的命名都习惯性地以“_info”结尾。
+
+无论是无符号数还是表，当需要描述同一类型但数量不定的多个数据时，经常会使用一个**前置的容量计数器**加若干**连续数据项**的形式描述。
+
+Class的结构不像XML等描述语言，由于它没有任何分隔符号，所以所有数据项，无论是顺序还是数量，甚至于数据存储的字节序（Byte Ordering，Class 文件中字节序为Big-Endian）这样的细节，都是被严格限定的**，哪个字节代表什么含义，长度是多少， 先后顺序如何，全部都不允许改变。**
+
+Class文件总体的结构如下表所示：
+
+|      类型      |                名称                |          数量           |
+| :------------: | :--------------------------------: | :---------------------: |
+|       u4       |             magic/魔数             |            1            |
+|       u2       |      minor_version/最小版本号      |            1            |
+|       u2       |      major_version/主要版本号      |            1            |
+|       u2       | constant_pool_count/常量池容量计数 |            1            |
+|    cp_info     |      constant_pool/常量池集合      | constant_pool_count - 1 |
+|       u2       |       access_flags/访问标志        |            1            |
+|       u2       |         this_class/类索引          |            1            |
+|       u2       |        super_class/父类索引        |            1            |
+|       u2       |      interface_count/接口计数      |            1            |
+|       u2       |        interfaces/接口索引         |    interfaces_count     |
+|       u2       |       fileds_count/字段计数        |            1            |
+|   field_info   |         fields/字段表集合          |       field_count       |
+|       u2       |       methods_count/方法计数       |            1            |
+|       u2       |         methods/方法表集合         |      methods_count      |
+|       u2       |     attributes_count/属性计数      |            1            |
+| attribute_info |       attributes/属性表集合        |    attributes_count     |
+
+其中：
+
+* **魔数**（0xCAFEBABE）用于确定这个文件是否为一个能被虚拟机接受的Class文件。
+
+* **主要版本号**限定了能够解析本Class文件的JDK版本。目前**最小版本号**主要用于标识实现了新特性的Class文件。
+
+* **常量池计数**指定了常量池中有几项常量，从1开始计数，引用第0位表示在特定情况下“不引用任何一个常量池项目”。**常量池**主要存放两大类常量：字面量和符号引用。字面量好理解，就是不会改变的文字常量，比如文本字符串、被声明为final的常量值等。符号引用是用于唯一描述某个方法、字段、句柄、动态调用点等的文字。常量池集合中的每一项常量都是一张表，共有17种常量表。
+
+* **访问标志**用于标识类或接口的访问信息，如public、final、abstract，或标识这个类是一个接口、注解、枚举、模块等，或标识这个类并非由用户代码产生。
+
+* **类索引、父类索引和接口索引集合**这三项数据用于确定这个类的继承关系。类索引确定这个类的全限定名、父类索引确定这个类的父类的全限定类名，接口索引集合描述这个类实现了哪些接口。
+
+* **字段表集合**用于描述接口或类中声明的变量。Java语言中的“字段”包括静态变量和实例变量，不包括局部变量。字段表中有这么几项数据：
+
+  * |   类型    |                名称                 |       数量       |
+    | :-------: | :---------------------------------: | :--------------: |
+    |    u2     |      access_flags/字段访问标识      |        1         |
+    |    u2     |   name_index/简单名称的常量池引用   |        1         |
+    |    u2     | descriptor_index/描述符的常量池引用 |        1         |
+    |    u2     |     attributes_count/属性表计数     |        1         |
+    | attribute |        attributes/属性表集合        | attributes_count |
+
+    字段可以包括的修饰符有字段的**作用域（public、private、protected修饰符**）、是实例变量还是类变量（**static修饰符**）、**可变性（final）**、**并发可见性（volatile修饰符，是否强制从主内存读写）**、**可否被序列化（transient修饰符**）、字段**数据类型（基本类型、对象、数组）**、**字段名称**。
+
+  * 简单名称指的是没有类型和参数修饰的方法或者字段名称。
+
+  * 描述符：基本数据类型（byte、char、double、float、int、long、short、boolean）以及代表无返回值的void**类型都用一个大写字符来表示**，而对象类型则用**字符L加对象的全限定名**来表示。用描述符来描述方法时，按照先参数列表、后返回值的顺序描述。
+
+  * 属性表用于存储一些额外的信息。
+
+* **方法表集合**用于描述方法。结构和字段表几乎完全一致。
+
+  * 访问标志：因为`volatile`关键字和`transient`关键字不能修饰方法，所以方法表的访问标志中没有了` ACC_VOLATILE`标志和`ACC_TRANSIENT`标志。与之相对，`synchronized`、`native`、`strictfp`和`abstract` 关键字可以修饰方法，方法表的访问标志中也相应地增加了`ACC_SYNCHRONIZED`、` ACC_NATIVE`、`ACC_STRICTFP`和`ACC_ABSTRACT`标志。
+
+* **属性表集合**：Class文件、字段表、方法表都可以携带自己的属性表（attribute_info）集合，以描述某些场景专有的信息。方法表集合之后的属性表集合，指的是class文件所携带的辅助信息，比如该class文件的源文件的名称，以及任何带有RetentionPolicy.CLASS或者RetentionPolicy.RUNTIME的注解。这类信息通常被用于Java虚拟机的验证与运行，以及Java程序的调试
+
+</br>
+
+</br>
+
+
+
+### 3.2 解析class文件
+
+Go语言内置了丰富的数据类型，非常适合处理class文件。
+
+#### 3.2.1 读取数据
+
+直接操作字节流很不方便，所以先定义一个结构体来帮助读取数据。
+
+```go
+type ClassReader struct {
+	data []byte
+}
+func (self *ClassReader) readUint8() uint8 {}//读取u1
+func (self *ClassReader) readUint16() uint16 {}//读取u2
+func (self *ClassReader) readUint32() uint32 {}//读取u4
+func (self *ClassReader) readUint64() uint64 {}//读取u8
+func (self *ClassReader) readUint16s() []uint16 {}//读取u2集合
+func (self *ClassReader) readBytes(n uint32) []byte {}//读取指定数量的字节
+```
+
+利用`encoding/binary`包下的`BigEndian.Uintxx`方法读取字节，用Go的reslice语法跳过已读字节。
 
