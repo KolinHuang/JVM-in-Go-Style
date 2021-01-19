@@ -497,3 +497,222 @@ func (self *ClassReader) readBytes(n uint32) []byte {}//读取指定数量的字
 
 利用`encoding/binary`包下的`BigEndian.Uintxx`方法读取字节，用Go的reslice语法跳过已读字节。
 
+
+
+#### 3.2.2 整体结构
+
+有了ClassReader，就可以开始解析class文件了。在chap03/classfile目录下创建class_file.go文件，添加结构体：
+
+```go
+type ClassFile struct {
+	//magic	uint32
+	minorVersion	uint16	//最小版本号
+	majorVersion	uint16	//主要版本号
+	constantPool	ConstantPool	//常量池表
+	accessFlags		uint16	//访问标志
+	thisClass		uint16	//类索引
+	superClass		uint16	//父类索引
+	interfaceCount	uint16	//接口计数
+	interfaces		[]uint16	//接口信息
+	fields			[]*MemberInfo	//字段表
+	methods			[]*MemberInfo	//方法表
+	attributes		[]AttributeInfo	//属性表
+}
+```
+
+相比Java语言，Go的访问控制比较简单：只有公开和私有两种，因此用首字母大写标记某个类型、结构体、字段、变量、函数、方法等是公开的。
+
+首先定义一个函数Parse()把byte数组解析成ClassFile结构体。由于Go语言没有异常处理机制，只有一个panic-recover机制，所以在解析时使用panic-recover来捕获异常。
+
+> 插播go的recover函数：Recover 是一个Go语言的内建函数，可以让进入宕机流程中的 goroutine 恢复过来，recover 仅在延迟函数 defer 中有效，在正常的执行过程中，调用 recover 会返回 nil 并且没有其他任何效果，如果当前的 goroutine 陷入恐慌，调用 recover 可以捕获到 panic 的输入值，并且恢复正常的执行。
+>
+> 通常来说，不应该对进入 panic 宕机的程序做任何处理，但有时，需要我们可以从宕机中恢复，至少我们可以在程序崩溃前，做一些操作，举个例子，当 web 服务器遇到不可预料的严重问题时，在崩溃前应该将所有的连接关闭，如果不做任何处理，会使得客户端一直处于等待状态，如果 web 服务器还在开发阶段，服务器甚至可以将异常信息反馈到客户端，帮助调试。
+>
+> 在其他语言里，宕机往往以异常的形式存在，底层抛出异常，上层逻辑通过 try/catch 机制捕获异常，没有被捕获的严重异常会导致宕机，捕获的异常可以被忽略，让代码继续运行。
+>
+> Go语言没有异常系统，其使用 panic 触发宕机类似于其他语言的抛出异常，recover 的宕机恢复机制就对应其他语言中的 try/catch 机制。
+
+```go
+func Parse(classData []byte) (cf *ClassFile, err error){
+	defer func() {
+		if r := recover(); r != nil {
+			var ok bool
+			err, ok = r.(error)
+			if !ok {
+				err = fmt.Errorf("%v", r)
+			}
+		}
+	}()
+	cr := &ClassReader{classData}
+	cf = &ClassFile{}
+	cf.read(cr)//将数据读取到结构体中
+	return
+}
+```
+
+再定义一个read函数用于将字符数组通过ClassReader读取到结构体中，具体操作就是为Class文件的每一项数据定义一个读取函数，在读取函数中再调用ClassReader的读取方法。有点类似于JavaWeb开发中，将业务层和Dao层分离的意思。
+
+```go
+func (self *ClassFile) read(reader *ClassReader) {
+	self.readAndCheckMagic(reader)
+	self.readAndCheckVersion(reader)
+	self.constantPool = readConConstantPool(reader)
+	self.accessFlags = reader.readUint16()
+	self.thisClass = reader.readUint16()
+	self.superClass = reader.readUint16()
+	self.interfaces = reader.readUint16s()
+	//以下三者都需要用到常量池中的字面量或者符号引用
+	self.fields = readMember(reader, self.constantPool)
+	self.methods = readMember(reader, self.constantPool)
+	self.attributes = readAttributes(reader, self.constantPool)
+}
+```
+
+
+
+#### 3.2.3魔数
+
+class文件以“0xCAFEBABE”开头，用于标识这是一个class文件。所以需要首先读取魔数，校验这是否是个class文件。Java虚拟机规定，如果加载的class文件不符合要求的格式，JVM实现需要抛出`java.lang.ClassFormatError`异常。
+
+在读取魔数的时候， 直接使用ClassReader读取连续的4个字节即可。
+
+由于我们还未实现异常机制，因此如果不符合要求，暂时调用panic终止程序运行。
+
+
+
+#### 3.2.3版本号
+
+我们参考Java 8，支持的版本号为45.0~52.0的class文件。根据JVM规范规定，如果遇到其他版本号，应当抛出`java.lang.UnsupportedClassVersionError`异常。目前我们暂时使用panic终止程序。
+
+
+
+
+
+#### 3.2.5类访问标志
+
+版本号之后是常量池，比较复杂，放到后面再讲。先讲类访问标志，是16比特的bitmask。
+
+
+
+#### 3.2.6类和超类索引
+
+两个u2类型的常量池索引，分别指向类名和超类名。class文件存储的类名类似与完全限定名，只是把点换成了斜线，Java语言规范把这种名字叫做二进制名(binary names)。
+
+
+
+#### 3.2.7 接口索引表
+
+接口索引表中存放的也是常量池索引，给出该类实现的所有接口的名字。
+
+
+
+#### 3.2.8 字段和方法表
+
+字段表和方法表的基本结构大致相同，差别仅在于属性表。所以我们用一个结构体统一表示方法和字段。在chap03/classfile目录下创建member_info.go文件：
+
+```go
+type MemberInfo struct {
+	cp	ConstantPool	//常量池引用
+	accessFlags	uint16	//访问标志
+	nameIndex	uint16	//简单名称索引
+	describetorIndex	uint16	//描述符索引
+	attributes	[]Attributeinfo	//属性表集合
+}
+```
+
+
+
+编写方法按序读取字段表或方法表：
+
+```go
+//读取字段表或方法表
+func readMembers(reader *ClassReader, cp ConstantPool) []*MemberInfo {
+	memberCount := reader.readUint16()//读取计数
+	members := make([]*MemberInfo, memberCount)
+	for i := range members {
+		members[i] = readMember(reader, cp)
+	}
+	return members
+}
+
+func readMember(reader *ClassReader, cp ConstantPool) *MemberInfo {
+	return &MemberInfo{
+		cp:	cp,
+		accessFlags: reader.readUint16(),
+		nameIndex:	reader.readUint16(),
+		describetorIndex: reader.readUint16(),
+		attributes: readAttributes(reader, cp),
+	}
+}
+```
+
+
+
+
+
+### 3.3 解析常量池
+
+
+
+#### 3.3.1 ConstantPool结构体
+
+在chap03/classfile目录下创建constant_pool.go文件：
+
+```go
+package classfile
+
+type ConstantPool []ConstantInfo
+```
+
+常量池其实也是一张表，但是需要注意的是，表头的计数会比实际的表长大1，因为索引为0的位置需要留出来表示不引用任何常量。
+
+CONSTANT_Long_info和CONSTANT_Double_info各占两个位置。也就是说当常量池中存在这两种常量时，实际的常量数量会少于n-1个。
+
+
+
+
+
+#### 3.3.2 ConstantInfo接口
+
+JVM规范中一共定义了14种常量，每种常量对应一个tag。
+
+![image-20210119200136453](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210119200136453.png)
+
+所以创建/classfile/constant_info.go接口文件并定义常量：
+
+```go
+const (
+	CONSTANT_Class              = 7		//类或接口的符号引用
+	CONSTANT_Fieldref           = 9		//字段的符号引用
+	CONSTANT_Methodref          = 10	//类中方法的符号引用
+	CONSTANT_InterfaceMethodref = 11	//接口中方法的符号引用
+	CONSTANT_String             = 8		//字符串类型字面量
+	CONSTANT_Integer            = 3		//整型字面量
+	CONSTANT_Float              = 4		//浮点型字面量
+	CONSTANT_Long               = 5		//长整型字面量
+	CONSTANT_Double             = 6		//双精度字面量
+	CONSTANT_NameAndType        = 12	//字段或方法的部分符号引用
+	CONSTANT_Utf8               = 1		//UTF-8编码的字符串
+	CONSTANT_MethodHandle       = 15	//表示方法句柄
+	CONSTANT_MethodType         = 16	//表示方法类型
+	CONSTANT_InvokeDynamic      = 18	//表示一个动态方法调用点
+)
+```
+
+定义接口：
+
+```go
+type ConstantInfo interface {
+	//读取常量信息，由具体的常量结构体实现
+	readInfo(reader *ClassReader)
+}
+```
+
+读取tag，根据tag来创建对应的ConstantXxxInfo常量，然后将数据读入具体的ConstantXxxInfo产量。
+
+
+
+接下来逐个定义具体的常量结构体，并实现ConstantInfo接口
+
+#### 3.3.3 CONSTANT_Integer_info
+
