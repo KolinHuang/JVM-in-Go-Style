@@ -1,7 +1,5 @@
 package classfile
 
-import "fmt"
-
 type ConstantPool []ConstantInfo
 
 //读取所有的常量
@@ -28,6 +26,7 @@ func (self ConstantPool) getConstantInfo(index uint16) ConstantInfo {
 	panic("Invalid constant pool index! ")
 }
 
+//返回名称和描述符
 func (self ConstantPool) getNameAndType(index uint16) (string, string) {
 	ntInfo := self.getConstantInfo(index).(*ConstantNameAndTypeInfo)
 	name := self.getUtf8(ntInfo.nameIndex)
@@ -37,7 +36,7 @@ func (self ConstantPool) getNameAndType(index uint16) (string, string) {
 
 func (self ConstantPool) getClassName(index uint16) string {
 	classInfo := self.getConstantInfo(index).(*ConstantClassInfo)
-	retrun self.getUtf8(classInfo.nameIndex)
+	return self.getUtf8(classInfo.nameIndex)
 }
 
 //根据字符引用索引找到字符

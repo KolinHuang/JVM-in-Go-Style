@@ -37,13 +37,13 @@ func Parse(classData []byte) (cf *ClassFile, err error){
 func (self *ClassFile) read(reader *ClassReader) {
 	self.readAndCheckMagic(reader)
 	self.readAndCheckVersion(reader)
-	self.constantPool = readConConstantPool(reader)
+	self.constantPool = readConstantPool(reader)
 	self.accessFlags = reader.readUint16()
 	self.thisClass = reader.readUint16()
 	self.superClass = reader.readUint16()
 	self.interfaces = reader.readUint16s()
 	//以下三者都需要用到常量池中的字面量或者符号引用
-	self.fields = readMember(reader, self.constantPool)
+	self.fields = read cMember(reader, self.constantPool)
 	self.methods = readMember(reader, self.constantPool)
 	self.attributes = readAttributes(reader, self.constantPool)
 }

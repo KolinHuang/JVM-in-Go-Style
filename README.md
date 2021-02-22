@@ -716,3 +716,158 @@ type ConstantInfo interface {
 
 #### 3.3.3 CONSTANT_Integer_info
 
+CONSTANT_Integer_info使用4字节存储整形常量。由于CONSTANT_Integer_info\CONSTANT_Float\CONSTANT_Long\CONSTANT_Double这四种数字型字面量十分相似，因此将这些结构体定义在同一个文件中。在chap03/classfile下创建目录cp_numeric.go
+
+```go
+type ConstantIntegerInfo struct {
+	val int32
+}
+type ConstantFloatInfo struct {
+	val float32
+}
+type ConstantLongInfo struct {
+	val int64
+}
+type ConstantDoubleInfo struct {
+	val float64
+}
+```
+
+再分别实现readInfo方法，从字节流中读取数字型字面量。
+
+
+
+
+
+
+
+#### 3.3.4 CONSTANT_Utf8_info
+
+CONSTANT_Utf8_info常量中存放的是MUTF-8编码（Modified UTF-8）的字符串。
+
+MUTF-8编码方式和UTF-8大致相同，但并不兼容。主要有以下两点区别：
+
+* null字符（U+0000）会被编码成2字节：0xC0, 0x80
+* 补充字符（U+FFFF的Unicode字符）按UTF-16拆分为代理对（Surrogate Pair）分别编码的。
+
+以下内容摘自[JVM规范4.4.7](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.4.7)：
+
+*String content is encoded in modified UTF-8. Modified UTF-8 strings are encoded so that code point sequences that contain only non-null ASCII characters can be represented using only 1 byte per code point, but all code points in the Unicode codespace can be represented. Modified UTF-8 strings are not null-terminated.*
+
+...
+
+*There are two differences between this format and the "standard" UTF-8 format. First, the null character `(char)0` is encoded using the 2-byte format rather than the 1-byte format, so that modified UTF-8 strings never have embedded nulls. Second, only the 1-byte, 2-byte, and 3-byte formats of standard UTF-8 are used. The Java Virtual Machine does not recognize the four-byte format of standard UTF-8; it uses its own two-times-three-byte format instead.*
+
+在chap03/classfile下创建cp_utf8.go文件：
+
+```go
+type ConstantUtf8Info struct {
+	str string
+}
+```
+
+由于go语言使用的是UTF-8编码，而字节码文件使用的是MUTF-8编码，因此需要进行解码。
+
+
+
+
+
+#### 3.3.5 CONSTANT_String_info
+
+CONSTANT_String_info常量表示java.lang.String字面量。CONSTANT_String_info本身不存放字符串数据，只存了常量池索引，这个索引指向一个CONSTANT_Utf-8_info常量。
+
+在chpa03/classfile目录下创建cp_string.go 文件，在其中定义ConstantStringInfo结构体：
+
+```go
+type ConstantStringInfo struct {
+	cp	ConstantPool
+	stringIndex uint16
+}
+```
+
+
+
+#### 3.3.6 CONSTANT_Class_info
+
+CONSTANT_Class_info常量表示类或者接口的符号引用。和CONSTANT_String_info类似，name_index是常量池索引，指向CONSTANT_Utf-8_info常量。
+
+在chap03/classfile目录下创建cp_class.go文件
+
+```go
+type ConstantClassInfo struct {
+	cp	ConstantPool
+	nameIndex	uint16
+}
+```
+
+
+
+#### 3.3.7 CONSTANT_NameAndType_info
+
+给出字段或方法的名称和描述符
+
+CONSTANT_Class_Info和CONSTANT_NameAndType_info加在一起可以唯一确定一个字段或者方法。
+
+描述符：基本数据类型（byte、char、double、float、int、long、short、boolean）以及代表无返回值的void**类型都用一个大写字符来表示**，而对象类型则用**字符L加对象的全限定名**来表示
+
+![image-20201218093840471](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20201218093840471.png)
+
+对于数组类型，每一维度将使用一个前置的“[”字符来描述，如一个定义为**“java.lang.String[][]”类型** 的二维数组将被记录成“**[[Ljava/lang/String；**”，一个整型数组“int[]”将被记录成“[I”。
+
+用描述符来描述方法时，按照先参数列表、后返回值的顺序描述，参数列表按照参数的严格顺序放在一组小括号“()”之内。如方法`void inc()`的描述符为“`()V`”，方法`java.lang.String toString()`的描述符 为“`()Ljava/lang/String；`”，方法`int indexOf(char[]source，int sourceOffset，int sourceCount，char[]target， int targetOffset，int targetCount，int fromIndex)`的描述符为“`([CII[CIII)I`”。
+
+
+
+#### 3.3.8 CONSTANT_Fieldref_info
+
+表示字段符号引用
+
+#### 3.3.9 CONSTANT_Methodref_info
+
+标识普通方法符号引用
+
+#### 3.3.10 CONSTANT_InterfaceMethodref_info
+
+标识接口方法符号引用
+
+以上三种类型常量结构相同，故定义一个统一的结构体ConstantMemberrefInfo来表示这3中常量。在chap03/classfile目录下创建cp_member_ref.go文件:
+
+```go
+type ConstantMemberrefInfo struct {
+	cp ConstantPool
+	classIndex	uint16
+	nameAndTypeIndex	uint16
+}
+```
+
+然后定义三个结构体“继承”ConstantMemberrefInfo。Go语言并没有“继承”这个概念，但是可以通过结构体嵌套来模拟：
+
+```go
+type ConstantFieldrefInfo struct {
+	ConstantMemberrefInfo
+}
+
+type ConstantMethodrefInfo struct {
+	ConstantMemberrefInfo
+}
+
+type ConstantInterfaceMethodrefInfo struct {
+	ConstantMemberrefInfo
+}
+```
+
+
+
+剩余三个常量：CONSTANT_MethodType_info、CONSTANT_MethodHandle_info和CONSTANT_InvokeDynamic_info在Java7才添加到class文件中，目的是支持新增的invokedynamic指令。
+
+
+
+**小结**
+可以把常量池中的常量分为两类：字面量（literal）和符号引用（symbolic reference）。字面量包括数字常量和字符串常量，符号引用包括类和接口名、字段和方法信息等。除了字面量，其他常量都是通过索引直接或间接指向CONSTANT_Utf-8_info常量。
+
+
+
+
+
+### 3.4 解析属性表
+
