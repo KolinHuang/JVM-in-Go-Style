@@ -62,6 +62,6 @@ func newConstantInfo(tag uint8, cp ConstantPool) ConstantInfo {
 	default:
 		panic("java.lang.ClassFormatError: constant pool tag!")
 	}
-	
+
 
 }

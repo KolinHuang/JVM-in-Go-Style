@@ -76,6 +76,6 @@ func (self *ConstantDoubleInfo) readInfo(reader *ClassReader) {
 	self.val = math.Float64frombits(bytes)
 }
 
-func (self *ConstantDoubleInfo) Value() {
+func (self *ConstantDoubleInfo) Value() float64{
 	return self.val
 }

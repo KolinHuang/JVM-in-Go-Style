@@ -43,8 +43,8 @@ func (self *ClassFile) read(reader *ClassReader) {
 	self.superClass = reader.readUint16()
 	self.interfaces = reader.readUint16s()
 	//以下三者都需要用到常量池中的字面量或者符号引用
-	self.fields = read cMember(reader, self.constantPool)
-	self.methods = readMember(reader, self.constantPool)
+	self.fields = readMembers(reader, self.constantPool)
+	self.methods = readMembers(reader, self.constantPool)
 	self.attributes = readAttributes(reader, self.constantPool)
 }
 
@@ -87,7 +87,7 @@ func (self *ClassFile) AccessFlags() uint16 {
 	return self.accessFlags
 }
 
-func (self *ClassFile) Fileds() []*MemberInfo {
+func (self *ClassFile) Fields() []*MemberInfo {
 	return self.fields
 }
 

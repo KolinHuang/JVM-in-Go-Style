@@ -1,5 +1,16 @@
 package classfile
 
+type ConstantFieldrefInfo struct {
+	ConstantMemberrefInfo
+}
+
+type ConstantMethodrefInfo struct {
+	ConstantMemberrefInfo
+}
+
+type ConstantInterfaceMethodrefInfo struct {
+	ConstantMemberrefInfo
+}
 
 type ConstantMemberrefInfo struct {
 	cp ConstantPool
@@ -20,14 +31,3 @@ func (self *ConstantMemberrefInfo) NameAndDescriptor() (string, string) {
 	return self.cp.getNameAndType(self.nameAndTypeIndex)
 }
 
-type ConstantFieldrefInfo struct {
-	ConstantMemberrefInfo
-}
-
-type ConstantMethodrefInfo struct {
-	ConstantMemberrefInfo
-}
-
-type ConstantInterfaceMethodrefInfo struct {
-	ConstantMemberrefInfo
-}

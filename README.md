@@ -871,3 +871,247 @@ type ConstantInterfaceMethodrefInfo struct {
 
 ### 3.4 解析属性表
 
+Class文件、字段表、方法表都可以携带自己的属性表（attribute_info）集合，以描述某些场景专有的信息。
+
+与Class文件中其他的数据项目要求严格的顺序、长度和内容不同，属性表集合的限制稍微宽松一 些，**不再要求各个属性表具有严格顺序**，并且《Java虚拟机规范》允许只要不与已有属性名重复，任何人实现的编译器都可以向属性表中写入自己定义的属性信息，Java虚拟机运行时会忽略掉它不认识的属性。
+
+对于每一个属性，它的名称都要从常量池中引用一个CONSTANT_Utf8_info类型的常量来表示， 而属性值的结构则是完全自定义的，只需要通过一个u4的长度属性去说明属性值所占用的位数即可。
+
+一个符合规则的属性表应该满足
+
+![image-20201219102930077](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20201219102930077.png)
+
+
+
+#### 3.4.1 AttributeInfo接口
+
+和常量池类似，各种属性表达的信息也各不相同，因此无法用统一的结构来定义。
+
+在chap03/classfile目录下创建attribute_info文件，在其中定义AttributeInfo接口：
+
+```go
+type AttributeInfo interface {
+	readInfo(reader *ClassReader)
+  func readAttributes(reader *ClassReader, cp ConstantPool) []AttributeInfo
+  func newAttributeInfo(attrName string, attrLen uint32, cp ConstantPool) AttributeInfo
+}
+```
+
+和ConstantInfo接口一样，AttributeInfo接口也只定义了一个readInfo方法，需要具体的属性实现。
+
+再定义readAttribute和readAttributes方法，从class文件中读取属性集合，根据属性名创建属性实例。
+
+JVM规范定义了23种属性，先解析以下8种：
+
+```go
+func newAttributeInfo(attrName string, attrLen uint32, cp ConstantPool) AttributeInfo {
+	switch attrName {
+	case "Code":
+		return &CodeAttribute{cp : cp}
+	case "ConstantValue":
+		return &ConstantValueAttribute{}
+	case "Deprecated":
+		return &DeprecatedAttribute{}
+	case "Exceptions":
+		return &ExceptionsAttribute{}
+	case "LineNumberTable":
+		return &LineNumberTableAttribute{}
+	case "LocalVariableTable":
+		return &LocalVariableTableAttribute{}
+	case "SourceFile":
+		return &SourceFileAttribute{cp : cp}
+	case "Systhetic":
+		return &SyntheticAttribute{}
+	default:
+		return &UnparsedAttribute{attrName, attrLen, nil}
+	}
+}
+```
+
+
+
+按照用途，23种预定义的属性可以分为三组。第一组属性是实现Java虚拟机所必需的，共有5种；第二组属性是Java类库所必需的，共有12种；第三组属性主要提供给工具使用，共有6种。第三组是可选属性。
+
+![image-20210224184558142](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210224184558142.png)
+
+
+
+#### 3.4.2 Deprecated和Synthetic属性
+
+Deprecated和Synthetic属性是最简单的两种属性，仅起标记作用，不包含任何数据。
+
+正因为不包含任何数据，所以attribute_length的值必须是0。
+
+Deprecated属性用于指出类、接口、字段或方法已经不建议使用，使用@Deprecated注解可以添加此属性。
+
+Synthetic属性用来标记源文件中不存在、由编译器生成的类成员，引入Synthetic属性主要是为了支持嵌套类和嵌套接口。
+
+```go
+type DepreactedAttribute struct {
+	MarkerAttribute
+}
+
+type SyntheticAttribute struct {
+	MarkerAttribute
+}
+type MarkerAttribute struct {
+}
+```
+
+
+
+#### 3.4.3 SourceFile属性
+
+SourceFile是可选定长属性，只会出现在ClassFile结构中，用于指出源文件名。
+
+```go
+type SourceFileAttribute struct {
+	cp ConstantPool
+	sourceFileIndex	uint16
+}
+```
+
+sourceFileIndex是一个指向CONSTANT_utf-8_info的索引，指出源文件名。
+
+
+
+#### 3.4.4 ConstantValue属性
+
+ConstantValue是定长属性，只会出现在field_info结构中，用于表示常量表达式的值。
+
+```go
+type ConstantValueAttribute struct {
+	cosntantValueIndex uint16
+}
+```
+
+
+
+#### 3.4.5 Code属性
+
+Code是变长属性，用于存放字节码等方法相关信息。Code属性比较复杂。
+
+```go
+type CodeAttribute struct {
+	cp	ConstantPool
+	maxStack	uint16	//操作数栈的最大深度
+	maxLocal	uint16	//局部变量表的大小
+	code	[]byte	//字节码
+	exceptionTable	[]*ExceptionTableEntry	//异常表
+	attributes	[]AttributeInfo	//属性表
+}
+
+type ExceptionTableEntry struct {
+	startPC	uint16
+	endPC	uint16
+	handlerPC	uint16
+	catchType	uint16
+}
+```
+
+
+
+
+
+#### 3.4.6 Exceptions属性
+
+Exceptions是变长属性，记录方法抛出的异常表。
+
+```go
+type ExceptionsAttribute struct {
+	exceptionIndexTable []uint16
+}
+```
+
+
+
+#### 3.4.7 LineNumberTable和LocalVariableTable属性
+
+LineNumberTable属性表存放方法的行号信息，LocalVariableTable属性表中存放方法的局部变量信息。
+
+这两种属性和SourceFile属性都属于调试信息，都不是运行时所必须的，默认会生成。
+
+```go
+type LineNumberTableAttribute struct {
+	lineNumberTable []*LineNumberTableEntry
+}
+
+type LineNumberTableEntry struct {
+	startPC	uint16
+	lineNumber	uint16
+}
+```
+
+```go
+type LocalVariableTableAttribute struct {
+	localVariableTable	[]*LocalVariableTableEntry
+}
+
+type LocalVariableTableEntry struct {
+	startPC uint16
+	length uint16
+	nameIndex uint16
+	descriptorIndex uint16
+	index uint16
+}
+```
+
+
+
+### 3.5 测试本章代码
+
+修改main.go文件：
+
+```go
+func startJVM(cmd *Cmd){
+	clsp := classpath.Parse(cmd.Xjre, cmd.clspath)
+	className := strings.Replace(cmd.class,".","/",-1)
+	cf := loadClass(className, clsp)
+	fmt.Println(cmd.class)
+	printClassInfo(cf)
+}
+//读取Class文件，将属性load到ClassFile对象中
+func loadClass(className string, cp *classpath.Classpath) *classfile.ClassFile {
+	classData, _, err := cp.ReadClass(className)//读数据
+	if err != nil {
+		panic(err)
+	}
+	cf, err := classfile.Parse(classData)//解析Class文件
+	if err != nil {
+		panic(err)
+	}
+	return cf
+}
+//打印ClassFile对象
+func printClassInfo(cf *classfile.ClassFile) {
+	fmt.Printf("version: %v.%v\n", cf.MajorVersion(), cf.MinorVersion())
+	fmt.Printf("constants count: %v\n", len(cf.ConstantPool()))
+	fmt.Printf("access flags: 0x%x\n", cf.AccessFlags())
+	fmt.Printf("this class: %v\n", cf.ClassName())
+	fmt.Printf("super class: %v\n", cf.SuperClassName())
+	fmt.Printf("interfaces: %v\n", cf.InterfaceNames())
+	fmt.Printf("fields count: %v\n", len(cf.Fields()))
+	for _, f := range cf.Fields() {
+		fmt.Printf("  %s\n", f.Name())
+	}
+	fmt.Printf("methods count: %v\n", len(cf.Methods()))
+	for _, m := range cf.Methods() {
+		fmt.Printf("  %s\n", m.Name())
+	}
+}
+
+```
+
+执行命令：
+
+```bash
+go install ../src/jvmgo/chap03
+chap03 -Xjre /Library/Java/JavaVirtualMachines/jdk1.8.0_201.jdk/Contents/Home/jre java.lang.String
+```
+
+结果如下:
+
+![image-20210224201159809](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210224201159809.png)
+
+Class文件解析成功。
+
