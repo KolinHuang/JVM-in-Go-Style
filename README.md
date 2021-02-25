@@ -1115,3 +1115,246 @@ chap03 -Xjre /Library/Java/JavaVirtualMachines/jdk1.8.0_201.jdk/Contents/Home/jr
 
 Class文件解析成功。
 
+
+
+
+
+## 4 运行时数据区
+
+多线程共享的内存区域主要存放两类数据：类数据和类实例。对象数据存放在Heap中，类数据存放在方法区当中。
+
+线程私有的内存区域用于辅助执行Java字节码。
+
+Go本身有垃圾回收功能，所以可以直接使用Go的堆和垃圾收集器。
+
+
+
+### 4.1 数据类型
+
+Go语言提供了非常丰富的数据类型，包括各种整数和两种精度的浮点数。Java和Go的浮点数都采用IEEE 754规范。对于基本类型，可以直接在Go和Java之间建立映射关系；对于引用类型自然选择使用指针实现。
+
+首先在chap04/rtda/Object.go中定义一个结构体来表示Object对象：
+
+```go
+type Object struct {
+	//todo
+}
+```
+
+
+
+### 4.2 实现运行时数据区
+
+本节会先实现线程私有的运行时数据区。下面先从线程入手。
+
+
+
+#### 4.2.1 线程
+
+在chap04/rtda下创建thread.go文件，在其中定义Thread结构体：
+
+```go
+type Thread struct {
+	pc	int
+	stack *Stack//虚拟机栈
+}
+```
+
+线程能够操作PC、操作虚拟机栈的栈帧，因此需要定义相关方法：
+
+```go
+func(self *Thread) PC() int {
+	return self.pc
+}
+func(self *Thread) SetPC(pc int) {
+	self.pc = pc
+}
+func(self *Thread) PushFrame(frame *Frame){
+	self.stack.push(frame)
+}
+func(self *Thread) PopFrame(frame *Frame){
+	self.stack.pop(frame)
+}
+func(self *Thread) CurrentFrame() *Frame{
+	return self.stack.top()
+}
+```
+
+
+
+
+
+#### 4.2.2 Java虚拟机栈
+
+Java虚拟机规范对Java虚拟机栈的约束非常宽松。
+
+每个JVM线程都有一个JVM栈，在线程创建的时候，随之创建。JVM栈与常规语言（如C）中的栈非常类似，它保存局部变量以及中间运算结果，参与方法的调用和返回。JVM栈的内存分配无需连续。
+
+- If the computation in a thread requires a larger Java Virtual Machine stack than is permitted, the Java Virtual Machine throws a `StackOverflowError`.
+- If Java Virtual Machine stacks can be dynamically expanded, and expansion is attempted but insufficient memory can be made available to effect the expansion, or if insufficient memory can be made available to create the initial Java Virtual Machine stack for a new thread, the Java Virtual Machine throws an `OutOfMemoryError`.
+
+我们用链表数据结构来实现Java虚拟机栈，这样栈就可以按需使用内存空间，而且弹出的栈帧也可以及时地被Go的垃圾收集器回收。在chap04/rtda目录下创建jvm_stack.go文件，在其中定义Stack结构体。
+
+```go
+type Stack struct {
+	maxSize	uint
+	size	uint
+	_top	*Frame
+}
+```
+
+同时在frame.go文件中编写栈帧的结构体：
+
+```go
+type Frame struct {
+	lower	*Frame	//指向此栈帧下方的第一个栈帧
+	localVars	LocalVars
+	operandStack	*OperandStack
+}
+```
+
+目前我们先在栈帧中定义3个属性：lower作为链表的next，localVars和operandStack分别表示局部变量表和操作数栈。
+
+
+
+#### 4.2.3 局部变量表
+
+局部变量表是按索引访问的，可以设置为一个数组。根据JVM规范， 这个数组的每个槽至少可以容纳一个int或者reference值，两个连续的元素可以容纳一个long或double值。
+
+在Go中，最容易想到用`[]int`来表示这个数组。Go的int类型因平台而异，在64位系统上是int64，在32位系统上是int32，总之足够容纳Java的int类型，另外它和内置的uintptr类型宽度一样，所以也足够放下一个内存地址。但Go的垃圾回收机制并不能有效处理uintptr指针。也就是说，如果一个结构体实例，除了uintptr类型指针保存它的地址之外，其他地方没有引用这个实例，它就会被当作垃圾回收。
+
+另一个方案是用[]interface{}类型，但是可读性比较差。
+
+第三种方案是定义一个结构体，让它可以同时容纳一个int值和一个引用值。在chap/rtda目录下创建slot.go文件
+
+```go
+type Slot struct {
+	num int32
+	ref *Object
+}
+```
+
+实现局部变量表
+
+```go
+type LocalVars []Slot
+
+func newLocalVars(maxLocals uint) LocalVars {
+	if maxLocals > 0 {
+		return make([]Slot, maxLocals)
+	}
+	return nil
+}
+```
+
+同时定义一些存取变量的方法
+
+```go
+//一些存取变量的方法
+func (self LocalVars) SetInt(index uint, val int32)
+
+func (self LocalVars) GetInt(index uint) int32
+//float变量先转成int类型，然后按int变量来处理
+func (self LocalVars) SetFloat(index uint, val float32) 
+func (self LocalVars) GetFloat(index uint) float32 
+// long consumes two slots
+func (self LocalVars) SetLong(index uint, val int64) 
+func (self LocalVars) GetLong(index uint) int64 
+
+// double consumes two slots
+func (self LocalVars) SetDouble(index uint, val float64)
+func (self LocalVars) GetDouble(index uint) float64 
+
+func (self LocalVars) SetRef(index uint, ref *Object) 
+func (self LocalVars) GetRef(index uint) *Object
+```
+
+
+
+
+
+#### 4.2.4 操作数栈
+
+在/chap04/rtda/operand_stack.go文件中定义OperandStack结构体：
+
+```go
+type OperandStack struct {
+	size int
+	slots []Slot
+}
+func newOperandStack(maxStack uint) *OperandStack{
+	if maxStack > 0 {
+		return &OperandStack{
+			slots: make([]Slot, maxStack),
+		}
+	}
+	return nil
+}
+```
+
+操作数栈的大小是编译期就已经确定的，所以可以用[]Slot实现。size字段用于记录栈顶位置。
+
+也定义一些操作数据的方法
+
+
+
+
+
+### 4.3 测试本章代码
+
+修改main.go:
+
+```go
+func startJVM(cmd *Cmd){
+	frame := rtda.NewFrame(100, cmd.maxStackSize)//创建栈帧
+	testLocalVars(frame.LocalVars())//操作局部变量表
+	testOperandStack(frame.OperandStack())//操作操作数栈
+}
+
+func testLocalVars(vars rtda.LocalVars) {
+	vars.SetInt(0, 100)
+	vars.SetInt(1, -100)
+	vars.SetLong(2, 2997924580)
+	vars.SetLong(4, -2997924580)
+	vars.SetFloat(6, 3.1415926)
+	vars.SetDouble(7, 2.71828182845)
+	vars.SetRef(9, nil)
+	println(vars.GetInt(0))
+	println(vars.GetInt(1))
+	println(vars.GetLong(2))
+	println(vars.GetLong(4))
+	println(vars.GetFloat(6))
+	println(vars.GetDouble(7))
+	println(vars.GetRef(9))
+}
+
+func testOperandStack(ops *rtda.OperandStack) {
+	ops.PushInt(100)
+	ops.PushInt(-100)
+	ops.PushLong(2997924580)
+	ops.PushLong(-2997924580)
+	ops.PushFloat(3.1415926)
+	ops.PushDouble(2.71828182845)
+	ops.PushRef(nil)
+	println(ops.PopRef())
+	println(ops.PopDouble())
+	println(ops.PopFloat())
+	println(ops.PopLong())
+	println(ops.PopLong())
+	println(ops.PopInt())
+	println(ops.PopInt())
+}
+
+```
+
+运行命令：
+
+```shell
+go install chap04
+chap04 test
+```
+
+结果：
+
+![image-20210225195538426](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210225195538426.png)
+
