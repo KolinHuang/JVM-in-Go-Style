@@ -1358,3 +1358,464 @@ chap04 test
 
 ![image-20210225195538426](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210225195538426.png)
 
+
+
+## 5 指令集和解释器
+
+本章将在前两章的基础上编写一个简单的解释器，并实现大约150条指令。
+
+
+
+### 5.1 字节码和指令集
+
+每个类或接口都会被Java编译器编译成一个class文件，类或接口的方法信息就放在class文件的method_info结构中。如果方法不是抽象的，也不是本地方法，方法的Java代码就会被编译器编译成字节码，存放在method_info结构的Code属性中。
+
+字节码中存放编码后的Java虚拟机指令。每条指令都以一个单字节的操作码（opcode）开头，这就是字节码名称的由来。
+
+Java虚拟机使用的是变长指令，操作码后面可以跟零字节或多字节的操作数。为了让编码后的字节更加紧凑，很多操作码本身就隐含了操作数，比如把常数0推入操作数栈的指令是iconst_0。
+
+
+
+由于操作数栈和局部变量表只存放数据的值，并不记录数据类型，所以指令必须知道自己在操作什么类型的数据。这一点也直接反映在了操作码的助记符上。例如iadd指令就是对int值进行加法操作；dstore指令把操作数栈顶的double值弹出，存储到局部变量表中。areturn从方法中返回引用值。
+
+总结其规律：**如果某类指令可以操作不同类型的变量，则助记符的第一个字母表示变量类型。**
+
+![image-20210226181936799](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210226181936799.png)
+
+
+
+JVM规范把已经定义的205条指令按用途分成了11类，分别是：
+
+1. 常量（constants）指令
+2. 加载（loads）指令
+3. 存储（stores）指令
+4. 操作数栈（stack）指令
+5. 数学（math）指令
+6. 转换（conversions）指令
+7. 比较（comparisons）指令
+8. 控制（control）指令
+9. 引用（references）指令
+10. 扩展（extended）指令
+11. 保留（reserved）指令
+
+保留指令一共有三条：breakpoint（0xCA）、impdep1（0xFE）、impdep2（0xFF）。这三条指令不允许出现在class文件中。
+
+
+
+### 5.2 指令和指令解码
+
+
+
+JVM规范给出了JVM解释器的大致逻辑：
+
+```java
+do {
+    atomically calculate pc and fetch opcode at pc;
+    if (operands) fetch operands;
+    execute the action for the opcode;
+} while (there is more to do);
+```
+
+每次循环重复做三件事：
+
+1. 自动计算PC，根据PC值取操作码
+2. 如果存在操作数，就取操作数
+3. 执行指令
+
+
+
+如果用for循环+switch case的方法来实现解释器，那么代码的可读性将非常之差，而且很不优雅。所以我们把指令抽象成接口，解码和执行逻辑写在具体的指令实现中，如：
+
+```go
+for{
+  pc := calculatePC()
+  opcode := bytecode[pc]
+  inst := createInst(opcode)
+  inst.fetchOperands(bytecode)
+  inst.execute()
+}
+```
+
+
+
+#### 5.2.1 Instructions接口
+
+```go
+type Instruction interface {
+	FetchOperands(reader *BytecodeReader)//从字节码中提取操作数
+	Execute(frame *rtda.Frame)//执行指令逻辑
+}
+```
+
+按照操作数类型定义一些结构体，并实现FetchOperands方法。这些结构体相当于Java中的抽象类，实现了Instruction接口，并规范了取指令方法。具体的指令继承这些结构体，然后专注实现Execute()方法即可。
+
+```go
+//零操作数的指令
+type NoOperandsInstruction struct {}
+
+func (self *NoOperandsInstruction) FetchOperands(reader *BytecodeReader) {
+	//nothing to do
+}
+
+//跳转指令
+type BranchInstruction struct {
+	Offset int//跳转偏移量
+}
+func (self *BranchInstruction) FetchOperands(reader *BytecodeReader) {
+	//nothing to do
+	self.Offset = int(reader.ReadInt16())
+}
+
+//存储和加载类指令需要根据索引存取局部变量表，索引由单字节操作数给出，所以把这类指令抽象成Index8Instruction
+type Index8Instruction struct {
+	Index uint//局部变量表的索引
+}
+func (self *Index8Instruction) FetchOperands(reader *BytecodeReader){
+	self.Index = uint(reader.ReadUint8())
+}
+//有一些指令需要访问常量池，常量池索引由两字节操作数给出，所以把这类指令抽象成Index16Instruction
+type Index16Instruction struct {
+	Index uint//局部变量表的索引
+}
+func (self *Index16Instruction) FetchOperands(reader *BytecodeReader){
+	self.Index = uint(reader.ReadUint16())
+}
+```
+
+
+
+#### 5.2.2 BytecodeReader
+
+在base目录下创建bytecode_reader.go文件，在其中定义BytecodeReader结构体：
+
+```go
+//字节码读取器
+type BytecodeReader struct {
+	code []byte//存放字节码
+	pc int//记录读取到了哪个字节
+}
+```
+
+为了避免每次解码指令都新创建一个BytecodeReader实例，给它定义一个Reset()方法：
+
+```go
+func (self *BytecodeReader) Reset(code []byte, pc int){
+	self.code = code
+	self.pc = pc
+}
+```
+
+再定义一些读取字节码的方法：
+
+```go
+//读8比特，也就是一个字节
+func (self *BytecodeReader) ReadUint8() uint8
+func (self *BytecodeReader) Readint8() int8
+//连续读取两字节
+func (self *BytecodeReader) ReadUint16() uint16
+func (self *BytecodeReader) ReadInt16() int16
+//连续读取四字节
+func (self *BytecodeReader) ReadUint32() int32
+func (self *BytecodeReader) ReadInt32s() []int32
+func (self *BytecodeReader) SkipPadding()
+```
+
+
+
+### 5.3 常量指令
+
+常量指令把常量推入操作数栈顶。常量可以来自三个地方：隐含在操作码里、操作数和运行时常量池。
+
+常量指令共有21条，本节实现其中的18条，另外三条是ldc指令，用于从运行时常量池中加载常量，将在第6章介绍。
+
+#### 5.3.1 nop指令
+
+即使是在JVM规范上，也是除了donothing之外，没有别的介绍了。
+
+```go
+type NOP struct {
+	base.NoOperandsInstruction
+}
+
+func (self *NOP) Excute(frame *rtda.Frame){
+	//do nothing
+}
+```
+
+
+
+#### 5.3.2 const系列指令
+
+这一系列指令把隐含在操作码中的常量值推入操作数栈顶。
+
+创建constants/const.go文件：
+
+```go
+type ACONST_NULL struct { base.NoOperandsInstruction }	//将nil入栈
+type DCONST_0 struct { base.NoOperandsInstruction }	//将double 0入栈
+type DCONST_1 struct { base.NoOperandsInstruction }	
+type FCONST_0 struct { base.NoOperandsInstruction }	//将float 0入栈
+type FCONST_1 struct { base.NoOperandsInstruction }
+type ICONST_M1 struct { base.NoOperandsInstruction }	//将int型-1入栈
+type ICONST_0 struct { base.NoOperandsInstruction }	//将int 0入栈
+type ICONST_1 struct { base.NoOperandsInstruction }
+type ICONST_2 struct { base.NoOperandsInstruction }
+type ICONST_3 struct { base.NoOperandsInstruction }
+type ICONST_4 struct { base.NoOperandsInstruction }
+type ICONST_5 struct { base.NoOperandsInstruction }
+type LCONST_0 struct { base.NoOperandsInstruction }	//将long 0入栈
+type LCONST_1 struct { base.NoOperandsInstruction }
+```
+
+分别实现其Execute方法：
+
+```go
+func (self *ACONST_NULL) Execute(frame *rtda.Frame){
+	frame.OperandStack().PushRef(nil)
+}
+func (self *DCONST_0) Execute(frame *rtda.Frame){
+	frame.OperandStack().PushDouble(float64(0))
+}
+func (self *DCONST_1) Execute(frame *rtda.Frame){
+	frame.OperandStack().PushDouble(float64(1))
+}
+...
+```
+
+
+
+#### 5.3.3 bipush和sipush指令
+
+bipush指令从操作数中获取一个byte型整数，并将其扩展成int型，然后推入栈顶。
+
+sipush指令从操作数中获取一个short型整数，并将其扩展成int型，然后推入栈顶。
+
+创建constants/ipush.go文件：
+
+```go
+//push byte
+type BIPUSH struct {
+	val int8
+}
+//push short
+type SIPUSH struct {
+	val int16
+}
+```
+
+分别实现bipush和sipush的FetchOperands以及Execute方法。FetchOperands从字节码中读取规定位数的操作数，Execute将操作数转为int，并推入栈顶。
+
+
+
+
+
+### 5.4 加载指令
+
+加载指令从局部变量表获取变量，然后推入操作数栈顶。加载指令共33条，按照所操作变量的类型可分为6类：
+
+1. aload系列指令操作引用类型变量
+2. dload系列指令操作double类型变量
+3. fload系列指令操作float变量
+4. iload系列指令操作int变量
+5. lload系列指令操作long变量
+6. xaload操作数组
+
+创建loads/iload.go文件：
+
+```go
+type ILOAD struct { base.Index8Instruction }
+type ILOAD_0 struct { base.NoOperandsInstruction }
+type ILOAD_1 struct { base.NoOperandsInstruction }
+type ILOAD_2 struct { base.NoOperandsInstruction }
+type ILOAD_3 struct { base.NoOperandsInstruction }
+```
+
+对于ILOAD指令：
+
+The *index* is an unsigned byte that must be an index into the local variable array of the current frame ([§2.6](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-2.html#jvms-2.6)). The local variable at *index* must contain an `int`. **The *value* of the local variable at *index* is pushed onto the operand stack.**
+
+对于ILOAD_n指令：
+
+Load `int` from local variable
+
+The <*n*> must be an index into the local variable array of the current frame ([§2.6](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-2.html#jvms-2.6)). The local variable at <*n*> must contain an `int`. The *value* of the local variable at <*n*> is pushed onto the operand stack.操作数的索引来自操作码。
+
+其余4条指令类似，xaload放到后面实现。
+
+
+
+### 5.5 存储指令
+
+和加载指令正好相反，存储指令把变量从操作数栈顶弹出，然后存入局部变量表。
+
+和加载指令一样，存储指令也可以分为6类。
+
+1. astore系列指令操作引用类型变量
+2. dstore系列指令操作double类型变量
+3. fstore系列指令操作float变量
+4. istore系列指令操作int变量
+5. lstore系列指令操作long变量
+6. xastore操作数组(bastore, castore)
+
+创建store/lstore.go文件：
+
+```go
+type LSTORE struct { base.Index8Instruction }
+type LSTORE_0 struct { base.NoOperandsInstruction }
+type LSTORE_1 struct { base.NoOperandsInstruction }
+type LSTORE_2 struct { base.NoOperandsInstruction }
+type LSTORE_3 struct { base.NoOperandsInstruction }
+```
+
+The *index* is an unsigned byte. Both *index* and *index*+1 must be indices into the local variable array of the current frame ([§2.6](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-2.html#jvms-2.6)). The *value* on the top of the operand stack must be of type `long`. It is popped from the operand stack, and the local variables at *index* and *index*+1 are set to *value*.
+
+The *lstore* opcode can be used in conjunction with the *wide* instruction ([§*wide*](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-6.html#jvms-6.5.wide)) to access a local variable using a two-byte unsigned index.
+
+其余4条指令类似，xastore放到后面实现。
+
+
+
+### 5.6 栈指令
+
+栈指令直接对操作数栈进行操作，共9条指令：
+
+1. pop和pop2指令将栈顶变量弹出；
+2. dup系列指令复制栈顶变量；
+3. swap指令交换栈顶两个变量。
+
+和其他类型的指令不同，栈指令并不关心变量类型。在操作数栈的数据结构中再封装两个方法：PushSlot和PopSlot，用于操作栈的元素。
+
+```go
+func (self *OperandStack) PushSlot(slot Slot){
+	self.slots[self.size] = slot
+	self.size++
+}
+
+func (self *OperandStack) PopSlot() Slot{
+	self.size--
+	return self.slots[self.size]
+}
+```
+
+
+
+#### 5.6.1 pop指令
+
+关于pop指令：
+
+Pop the top value from the operand stack.
+
+The *pop* instruction must not be used unless *value* is a value of a category 1 computational type ([§2.11.1](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-2.html#jvms-2.11.1)).
+
+除非value是1类计算类型的值，否则不得使用pop指令
+
+pop2用于弹出double和long变量。
+
+```go
+type POP struct { base.NoOperandsInstruction }
+type POP2 struct { base.NoOperandsInstruction }
+```
+
+
+
+#### 5.6.2 dup指令
+
+dup：Duplicate the top operand stack value.
+
+```markdown
+bottom -> top
+[...][c][b][a]
+             \_
+               |
+               V
+[...][c][b][a][a]
+```
+
+dup_x1：Duplicate the top operand stack value and insert two values down
+
+```markdown
+bottom -> top
+[...][c][b][a]
+          __/
+         |
+         V
+[...][c][a][b][a]
+```
+
+dup_x2：Duplicate the top operand stack value and insert two or three values down
+
+```markdown
+bottom -> top
+[...][c][b][a]
+       _____/
+      |
+      V
+[...][a][c][b][a]
+```
+
+dup2：Duplicate the top one or two operand stack values
+
+```markdown
+bottom -> top
+[...][c][b][a]____
+          \____   |
+               |  |
+               V  V
+[...][c][b][a][b][a]
+```
+
+dup2_x1：Duplicate the top one or two operand stack values and insert two or three values down
+
+```markdown
+bottom -> top
+[...][c][b][a]
+       _/ __/
+      |  |
+      V  V
+[...][b][a][c][b][a]
+```
+
+dup2_x2：Duplicate the top one or two operand stack values and insert two, three, or four values down
+
+```markdown
+bottom -> top
+[...][d][c][b][a]
+       ____/ __/
+      |   __/
+      V  V
+[...][b][a][d][c][b][a]
+```
+
+
+
+```go
+type DUP struct { base.NoOperandsInstruction }
+type DUP_X1 struct { base.NoOperandsInstruction }
+type DUP_X2 struct { base.NoOperandsInstruction }
+type DUP2 struct { base.NoOperandsInstruction }
+type DUP2_X1 struct { base.NoOperandsInstruction }
+type DUP2_X2 struct { base.NoOperandsInstruction }
+```
+
+
+
+#### 5.6.3 swap指令
+
+Swap the top two operand stack values
+
+```go
+type SWAP struct {
+	base.NoOperandsInstruction
+}
+```
+
+
+
+### 5.7 数学指令
+
+数学指令大致对应Java语言中的加、减、乘、除等数学运算符。数学指令包括算数指令、位移指令和布尔运算指令，共37条。
+
+
+
+#### 5.7.1 算数指令
+
