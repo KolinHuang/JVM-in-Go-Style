@@ -33,7 +33,7 @@ func (self *BytecodeReader) ReadInt16() int16{
 }
 
 //连续读取四字节
-func (self *BytecodeReader) ReadUint32() int32{
+func (self *BytecodeReader) ReadInt32() int32{
 	byte1 := int32(self.ReadUint8())
 	byte2 := int32(self.ReadUint8())
 	byte3 := int32(self.ReadUint8())
@@ -41,11 +41,17 @@ func (self *BytecodeReader) ReadUint32() int32{
 	return (byte1 << 24) | (byte2 << 16) | (byte3 << 8) | byte4
 }
 
-func (self *BytecodeReader) ReadInt32s() []int32{
-	return nil
+func (self *BytecodeReader) ReadInt32s(n int32) []int32{
+	ints := make([]int32, n)
+	for i := range ints{
+		ints[i] = self.ReadInt32()
+	}
+	return ints
 }
 
 func (self *BytecodeReader) SkipPadding() {
-
+	for self.pc % 4 != 0 {//如果PC值不是4的倍数，就继续SKip padding
+		self.ReadUint8()	//越过一个字节
+	}
 }
 

@@ -1210,10 +1210,17 @@ type Frame struct {
 	lower	*Frame	//指向此栈帧下方的第一个栈帧
 	localVars	LocalVars
 	operandStack	*OperandStack
+  thread       *Thread
+	nextPC       int // the next instruction after the call
 }
 ```
 
-目前我们先在栈帧中定义3个属性：lower作为链表的next，localVars和operandStack分别表示局部变量表和操作数栈。
+我们在栈帧中定义了5个属性：
+
+* lower作为链表的next
+* localVars和operandStack分别表示局部变量表和操作数栈
+* thread表示当前所在线程
+* nextPC表示下一条指令的地址
 
 
 
@@ -1819,3 +1826,385 @@ type SWAP struct {
 
 #### 5.7.1 算数指令
 
+算数指令又可以进一步分为加法指令（add）、减法指令（sub）、乘法指令（mul）、除法指令（div）、求余指令（rem）和取反指令（neg）6种。
+
+求余指令：
+
+```go
+type DREM struct { base.NoOperandsInstruction }//double求余
+type FREM struct { base.NoOperandsInstruction }//float求余
+type IREM struct { base.NoOperandsInstruction }//int求余
+type LREM struct { base.NoOperandsInstruction }//long求余
+```
+
+其余5条指令都比较简单。
+
+
+
+#### 5.7.2 位移指令
+
+位移指令可以分为左移和右移，右移指令又可以分为算数右移（右符号右移）和逻辑右移（无符号右移）两种。
+
+```go
+type ISHL struct { base.NoOperandsInstruction }
+type ISHR struct { base.NoOperandsInstruction }
+type IUSHL struct { base.NoOperandsInstruction }
+type LSHL struct { base.NoOperandsInstruction }
+type LSHR struct { base.NoOperandsInstruction }
+type LUSHL struct { base.NoOperandsInstruction }
+```
+
+```go
+func (self *ISHL) Execute(frame *rtda.Frame){
+	stack := frame.OperandStack()
+	v2 := stack.PopInt()	//v2为需要左移的位数
+	v1 := stack.PopInt()
+	s := uint32(v2) & 0x1f	//只需要取v2的前5比特就足够表示位移位数了
+	result := v1 << s
+	stack.PushInt(result)
+}
+
+```
+
+1. int变量只有32位，所以只取v2的前5比特就足够表示位移位数了；
+
+2. Go语言位移操作符右侧必须是无符号整数，所以需要对v2进行类型转换。
+
+
+
+#### 5.7.3 布尔运算指令
+
+布尔运算指令只能操作int和long变量，分为按位与（and）、按位或（or）、按位异或（xor）三种。以与为例：
+
+```go
+type IAND struct { base.NoOperandsInstruction }
+type LAND struct { base.NoOperandsInstruction }
+
+func (self *IAND) Execute(frame *rtda.Frame){
+	stack := frame.OperandStack()
+	v1 := stack.PopInt()
+	v2 := stack.PopInt()
+	result := v1 & v2
+	stack.PushInt(result)
+}
+
+func (self *LAND) Execute(frame *rtda.Frame){
+	stack := frame.OperandStack()
+	v1 := stack.PopLong()
+	v2 := stack.PopLong()
+	result := v1 & v2
+	stack.PushLong(result)
+}
+```
+
+代码较为简单，不多解释了。
+
+
+
+#### 5.7.4 iinc指令
+
+iinc指令给局部变量表中的int变量增加常量值，局部变量表索引和常量值都由**指令的操作数提供。**
+
+```go
+type IINC struct {
+	Index uint
+	Const int32
+}
+
+func (self *IINC) FetchOperands(reader *base.BytecodeReader){
+	self.Index = uint(reader.ReadUint8())
+	self.Const = int32(reader.ReadInt8())
+}
+
+func (self *IINC) Execute(frame *rtda.Frame){
+	localVars := frame.LocalVars()
+	val := localVars.GetInt(self.Index)
+	val += self.Const
+	localVars.SetInt(self.Index, val)
+}
+```
+
+
+
+
+
+### 5.8 类型转换指令
+
+类型转换指令大致对应Java语言中的基本类型强制转换操作。类型转换指令共有15条。
+
+按照被转换变量的类型，类型转换指令可以分为3种：
+
+1. i2x系列指令把int变量强转为其他类型。
+2. l2x系列指令把long变量强转为其他类型。
+3. f2x系列指令把float变量强转为其他类型。
+4. d2x系列指令把double变量强转为其他类型。
+
+```go
+type D2F struct { base.NoOperandsInstruction }
+type D2I struct { base.NoOperandsInstruction }
+type D2L struct { base.NoOperandsInstruction }
+
+func (self *D2F) Execute(frame *rtda.Frame){
+	stack := frame.OperandStack()
+	d := stack.PopDouble()
+	f := float32(d)
+	stack.PushFloat(f)
+}
+
+func (self *D2I) Execute(frame *rtda.Frame){
+	stack := frame.OperandStack()
+	d := stack.PopDouble()
+	i := int32(d)
+	stack.PushInt(i)
+}
+
+func (self *D2L) Execute(frame *rtda.Frame){
+	stack := frame.OperandStack()
+	d := stack.PopDouble()
+	l := int64(d)
+	stack.PushLong(l)
+}
+```
+
+Go基本类型转换非常方便，因此有利于实现上述指令。
+
+
+
+### 5.9 比较指令
+
+比较指令可以分为两类：一类将比较结果推入操作数栈顶，一类根据比较结果跳转。
+
+比较指令是编译器实现if-else, for, while等语句的基础，共有19条指令。
+
+
+
+#### 5.9.1 lcmp指令
+
+lcmp指令用于比较long变量。
+
+```go
+func (self *LCMP) Execute(frame *rtda.Frame){
+	stack := frame.OperandStack()
+	v1 := stack.PopLong()
+	v2 := stack.PopLong()
+	i := int32(0)
+	if v1 > v2 {
+		i = 1
+	}else if v1 < v2{
+		i = -1
+	}
+	stack.PushInt(i)
+}
+```
+
+
+
+#### 5.9.2 fcmp<op>和dcmp<op>指令
+
+fcmpg和fcmpl指令用于比较float变量。这两条指令和lcmp类似，但是出了比较的变量类型不同以外，还有一个重要的区别。由于浮点数计算有可能产生NaN值，所以除了大于、小于、等于之外，还有第四种结果：无法比较。fcmpg和fcmpl指令的区别就在于对第四种结果的定义。当两个float变量中至少有一个NaN时，用fcmpg指令比较的结果是1，用fcmpl指令比较的结果是-1。
+
+```go
+type FCMPG struct {base.NoOperandsInstruction}
+type FCMPL struct {base.NoOperandsInstruction}
+
+func _fcmp(frame *rtda.Frame, gFlag bool){
+	stack := frame.OperandStack()
+	v2 := stack.PopFloat()
+	v1 := stack.PopFloat()
+	if v1 > v2 {
+		stack.PushInt(1)
+	}else if v1 == v2 {
+		stack.PushInt(0)
+	}else if v1 < v2 {
+		stack.PushInt(-1)
+	}else if gFlag{
+		stack.PushInt(1)
+	}else{
+		stack.PushInt(-1)
+	}
+}
+
+func (self *FCMPG) Execute(frame *rtda.Frame){
+	_fcmp(frame, true)
+}
+func (self *FCMPG) Execute(frame *rtda.Frame){
+	_fcmp(frame, false)
+}
+```
+
+
+
+dcmp<op>与fcmp<op>代码几乎相同。
+
+
+
+#### 5.9.3 if<cond>指令
+
+if<cond>指令把操作数栈顶的int变量弹出，然后跟0比较，满足条件就跳转。假设弹出的变量是x
+
+* ifeq : x == 0 (equal)
+* ifne : x != 0 (not equal)
+* iflt : x < 0 (less than)
+* ifle : x <= 0 (less equal than)
+* ifgt : x > 0 (greater than)
+* ifge : x >= 0 (greater equal than)
+
+
+
+#### 5.9.5 if_acmp<cond>指令
+
+if_acmpeq和if_acmpne指令把栈顶的两个引用弹出，根据引用是否相同进行跳转。
+
+if_icmp<cond>指令把栈顶的两个int变量弹出，然后进行比较，满足条件跳转。
+
+
+
+
+
+### 5.10 控制指令
+
+控制指令共有11条。jsr和ret指令在Java6之后不再使用了；return系列有6条指令，放到后面实现。剩下goto, tableswitch和lookupswitch三条指令。
+
+#### 5.10.1 goto指令
+
+goto指令进行无条件跳转。
+
+
+
+#### 5.10.2 tableswitch指令
+
+Java语言中的switch-case语句有两种实现方式：如果case值可以编码成一个索引表，则实现成tableswitch指令；否则实现成lookupswitch指令。
+
+可用tableswitch实现：
+
+![image-20210302203905279](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210302203905279.png)
+
+
+
+需要用lookupswitch实现：
+
+![image-20210302203935136](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210302203935136.png)
+
+
+
+```go
+type TABLE_SWITCH struct {
+	defaultOffset int32	//默认情况下执行跳转所需的字节码偏移量
+	low int32	//记录case的取值下限
+	high int32	//记录case的取值上限
+	jumpOffsets []int32	//一个索引表，存放high - low + 1个int值，对应各种case下，执行跳转所需的字节码偏移量
+}
+```
+
+
+
+#### 5.10.3 lookupswitch指令
+
+```go
+type LOOKUP_SWITCH struct {
+   defaultOffset int32
+   npairs int32
+   matchOffsets []int32
+}
+```
+
+matchOffsets有点像Map，它的key是case值，value是跳转偏移量。所以查找时，需要遍历matchOffsets。
+
+
+
+
+
+### 5.11 扩展指令
+
+扩展指令共有6条，jsr_w已经不再使用。multianewarray指令用于创建多维数组，放到后面实现。
+
+
+
+#### 5.11.1 wide指令
+
+加载类指令、存储类指令、ret指令和iinc指令需要按索引访问局部变量表，索引以uint8的形式存在字节码中。对于大部分方法来说，局部变量表大小都不会超过256，所以用一字节来表示索引足矣。但是如果有方法的局部变量表超过了256，JVM规范定义了wide指令来扩展前述指令。
+
+```go
+type WIDE struct {
+	modifiedInstruction base.Instruction
+}
+```
+
+wide指令改变其他指令的行为，modifiedInstruction字段存放被改变的指令。wide指令需要自己解码出modifiedInstruction。
+
+```go
+func (self *WIDE) FetchOperands(reader *base.BytecodeReader) {
+	opcode := reader.ReadUint8()
+	switch opcode {//根据操作码来解码指令
+	case 0x15:
+		inst := &loads.ILOAD{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x16:
+		inst := &loads.LLOAD{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x17:
+		inst := &loads.FLOAD{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x18:
+		inst := &loads.DLOAD{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x19:
+		inst := &loads.ALOAD{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x36:
+		inst := &stores.ISTORE{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x37:
+		inst := &stores.LSTORE{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x38:
+		inst := &stores.FSTORE{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x39:
+		inst := &stores.DSTORE{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x3a:
+		inst := &stores.ASTORE{}
+		inst.Index = uint(reader.ReadUint16())
+		self.modifiedInstruction = inst
+	case 0x84:
+		inst := &math.IINC{}
+		inst.Index = uint(reader.ReadUint16())
+		inst.Const = int32(reader.ReadInt16())
+		self.modifiedInstruction = inst
+	case 0xa9: // ret
+		panic("Unsupported opcode: 0xa9!")
+	}
+}
+```
+
+
+
+#### 5.11.2 ifnull和ifnonnull指令
+
+根据引用是否为空进行跳转。
+
+
+
+
+
+#### 5.11.3 goto_w指令
+
+goto_w指令和goto指令的唯一区别就是索引从2字节变成了4字节。
+
+
+
+
+
+
+
+### 5.12 解释器
