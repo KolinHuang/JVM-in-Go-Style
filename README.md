@@ -2208,3 +2208,162 @@ goto_w指令和goto指令的唯一区别就是索引从2字节变成了4字节�
 
 
 ### 5.12 解释器
+
+实现一个简单的解释器。
+
+```go
+func interpret(methodInfo *classfile.MemberInfo){
+	//获得到方法的Code属性
+	codeAttr := methodInfo.CodeAttribute()
+	//获得最大栈深度
+	maxLocals := codeAttr.MaxLocals()
+	//获得最大局部变量表长度
+	maxStack := codeAttr.MaxStack()
+	//获得字节码
+	bytecode := codeAttr.Code()
+
+	thread := rtda.NewThread()
+	frame := thread.NewFrame( maxLocals, maxStack)
+	thread.PushFrame(frame)
+
+	defer catchErr(frame)
+	loop(thread, bytecode)
+}
+
+func catchErr(frame *rtda.Frame){
+	if r := recover(); r != nil{
+		fmt.Printf("LocalVars:%v\n", frame.LocalVars())
+		fmt.Printf("OperandStack:%v\n", frame.OperandStack())
+		panic(r)
+	}
+}
+
+func loop(thread *rtda.Thread, bytecode []byte){
+	frame := thread.PopFrame()
+	reader := &base.BytecodeReader{}
+
+	for{
+		pc := frame.NextPC()
+		thread.SetPC(pc)
+
+		//decode
+		reader.Reset(bytecode, pc)
+		opcode := reader.ReadUint8()//取操作码
+		inst := instructions.NewInstruction(opcode)//创建指令
+		inst.FetchOperands(reader)//取操作数
+		frame.SetNextPC(reader.PC())//设置PC
+
+		//execute
+		fmt.Printf("pc:%2d inst:%T %v\n", pc, inst, inst)
+		inst.Execute(frame)//执行
+	}
+}
+```
+
+
+
+### 5.13 测试
+
+修改main方法：
+
+```go
+package main
+
+import (
+	"fmt"
+	"jvmgo/chap05/classfile"
+	"jvmgo/chap05/classpath"
+	"strings"
+)
+
+func main() {
+	cmd := parseCmd()
+	if cmd.versionFlag {
+		fmt.Println("version: 0.0.1")
+	} else if cmd.helpFlag || cmd.class == ""{
+		//用户指定了helpFlag参数或者未指定主类，就打印命令用法
+		printUsage()
+	} else {
+		//一切正常就启动Java虚拟机
+		startJVM(cmd)
+	}
+}
+
+func startJVM(cmd *Cmd){
+	cp := classpath.Parse(cmd.Xjre, cmd.clspath)
+	className := strings.Replace(cmd.class, ".", "/", -1)
+	cf := loadClass(className, cp)
+	mainMethod := getMainMethod(cf)
+	if mainMethod == nil {
+		fmt.Printf("Main method not found in class %s\n", cmd.class)
+	}else{
+		interpret(mainMethod)
+	}
+	
+}
+
+func getMainMethod(cf *classfile.ClassFile) *classfile.MemberInfo{
+	for _, m := range cf.Methods() {
+		if m.Name() == "main" && m.Descriptor() == "(Ljava/lang/String)V"{
+			return m
+		}
+	}
+	return nil
+}
+
+func loadClass(className string, cp *classpath.Classpath) *classfile.ClassFile{
+	classData, _, err := cp.ReadClass(className)
+	if err != nil {
+		panic(err)
+	}
+	cf, err := classfile.Parse(classData)
+	if err != nil{
+		panic(err)
+	}
+	return cf
+}
+
+
+```
+
+执行流程：
+
+* 首先调用loadClass()方法读取并解析class文件
+* 再调用getMainMethod函数查找类的main方法
+* 最后调用interpret函数解析执行main方法
+
+创建测试文件GaussTest.java，用Javac编译器编译成class文件
+
+```java
+public class GaussTest{
+
+	public static void main(String[] args){
+		int sum = 0;
+		for(int i = 1; i <= 100; ++i){
+			sum += i;
+		}
+		System.out.println(sum);
+	}
+}
+```
+
+执行命令：
+
+```shell
+go install chap05
+```
+
+再转到bin目录下执行以下命令：
+
+```shell
+chap05 -Xjre /Library/Java/JavaVirtualMachines/jdk1.8.0_201.jdk/Contents/Home/jre -cp /Users/huangyucai/Documents/code/git_depositorys/github_KolinHuang/JVM-in-Go-Style/javafiles/ GaussTest
+```
+
+运行结果：
+
+![image-20210303192941959](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210303192941959.png)
+
+在局部变量表中得到了sum = 5050的结果，测试成功。
+
+
+

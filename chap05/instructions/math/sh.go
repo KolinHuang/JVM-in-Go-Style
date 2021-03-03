@@ -7,10 +7,10 @@ import (
 
 type ISHL struct { base.NoOperandsInstruction }
 type ISHR struct { base.NoOperandsInstruction }
-type IUSHL struct { base.NoOperandsInstruction }
+type IUSHR struct { base.NoOperandsInstruction }
 type LSHL struct { base.NoOperandsInstruction }
 type LSHR struct { base.NoOperandsInstruction }
-type LUSHL struct { base.NoOperandsInstruction }
+type LUSHR struct { base.NoOperandsInstruction }
 
 func (self *ISHL) Execute(frame *rtda.Frame){
 	stack := frame.OperandStack()
@@ -30,7 +30,7 @@ func (self *ISHR) Execute(frame *rtda.Frame){
 	stack.PushInt(result)
 }
 
-func (self *IUSHL) Execute(frame *rtda.Frame){
+func (self *IUSHR) Execute(frame *rtda.Frame){
 	stack := frame.OperandStack()
 	v2 := stack.PopInt()	//v2为需要左移的位数
 	v1 := stack.PopInt()
@@ -57,7 +57,7 @@ func (self *LSHR) Execute(frame *rtda.Frame){
 	stack.PushLong(result)
 }
 
-func (self *LUSHL) Execute(frame *rtda.Frame){
+func (self *LUSHR) Execute(frame *rtda.Frame){
 	stack := frame.OperandStack()
 	v2 := stack.PopInt()	//v2为需要左移的位数
 	v1 := stack.PopLong()

@@ -8,8 +8,9 @@ type Frame struct {
 	nextPC       int // the next instruction after the call
 }
 //创建栈帧：执行方法的局部变量表大小和操作数栈深度是由编译器预先计算好的，存储在class文件method_info结构的Code属性中
-func NewFrame(maxLocals, maxStack uint) *Frame {
+func newFrame(thread *Thread, maxLocals, maxStack uint16) *Frame {
 	return &Frame{
+		thread:thread,
 		localVars:    newLocalVars(maxLocals),
 		operandStack: newOperandStack(maxStack),
 	}

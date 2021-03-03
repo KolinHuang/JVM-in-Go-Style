@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"jvmgo/chap05/classfile"
+	"jvmgo/chap05/classpath"
 	"jvmgo/chap05/rtda"
+	"strings"
 )
 
 func main() {
@@ -19,9 +22,37 @@ func main() {
 }
 
 func startJVM(cmd *Cmd){
-	frame := rtda.NewFrame(100, cmd.maxStackSize)//创建栈帧
-	testLocalVars(frame.LocalVars())//操作局部变量表
-	testOperandStack(frame.OperandStack())//操作操作数栈
+	cp := classpath.Parse(cmd.Xjre, cmd.clspath)
+	className := strings.Replace(cmd.class, ".", "/", -1)
+	cf := loadClass(className, cp)
+	mainMethod := getMainMethod(cf)
+	if mainMethod == nil {
+		fmt.Printf("Main method not found in class %s\n", cmd.class)
+	}else{
+		interpret(mainMethod)
+	}
+
+}
+
+func getMainMethod(cf *classfile.ClassFile) *classfile.MemberInfo{
+	for _, m := range cf.Methods() {
+		if m.Name() == "main" && m.Descriptor() == "([Ljava/lang/String;)V"{
+			return m
+		}
+	}
+	return nil
+}
+
+func loadClass(className string, cp *classpath.Classpath) *classfile.ClassFile{
+	classData, _, err := cp.ReadClass(className)
+	if err != nil {
+		panic(err)
+	}
+	cf, err := classfile.Parse(classData)
+	if err != nil{
+		panic(err)
+	}
+	return cf
 }
 
 func testLocalVars(vars rtda.LocalVars) {

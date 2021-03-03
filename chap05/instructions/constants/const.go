@@ -10,6 +10,7 @@ type DCONST_0 struct { base.NoOperandsInstruction }	//将double 0入栈
 type DCONST_1 struct { base.NoOperandsInstruction }
 type FCONST_0 struct { base.NoOperandsInstruction }	//将float 0入栈
 type FCONST_1 struct { base.NoOperandsInstruction }
+type FCONST_2 struct { base.NoOperandsInstruction }
 type ICONST_M1 struct { base.NoOperandsInstruction }	//将int型-1入栈
 type ICONST_0 struct { base.NoOperandsInstruction }	//将int 0入栈
 type ICONST_1 struct { base.NoOperandsInstruction }
@@ -35,9 +36,15 @@ func (self *FCONST_0) Execute(frame *rtda.Frame){
 func (self *FCONST_1) Execute(frame *rtda.Frame){
 	frame.OperandStack().PushFloat(float32(1))
 }
+func (self *FCONST_2) Execute(frame *rtda.Frame) {
+	frame.OperandStack().PushFloat(2.0)
+}
 //将int型 -1推入操作数栈顶
 func(self *ICONST_M1) Execute(frame *rtda.Frame){
 	frame.OperandStack().PushInt(-1)
+}
+func(self *ICONST_0) Execute(frame *rtda.Frame){
+	frame.OperandStack().PushInt(0)
 }
 func(self *ICONST_1) Execute(frame *rtda.Frame){
 	frame.OperandStack().PushInt(1)
@@ -55,4 +62,10 @@ func(self *ICONST_5) Execute(frame *rtda.Frame){
 	frame.OperandStack().PushInt(5)
 }
 
+func(self *LCONST_0) Execute(frame *rtda.Frame){
+	frame.OperandStack().PushLong(0)
+}
+func(self *LCONST_1) Execute(frame *rtda.Frame){
+	frame.OperandStack().PushLong(1)
+}
 

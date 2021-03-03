@@ -55,3 +55,7 @@ func (self *BytecodeReader) SkipPadding() {
 	}
 }
 
+func (self *BytecodeReader) PC() int{
+	return self.pc
+}
+

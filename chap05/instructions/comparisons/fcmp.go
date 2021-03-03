@@ -28,6 +28,6 @@ func _fcmp(frame *rtda.Frame, gFlag bool){
 func (self *FCMPG) Execute(frame *rtda.Frame){
 	_fcmp(frame, true)
 }
-func (self *FCMPG) Execute(frame *rtda.Frame){
+func (self *FCMPL) Execute(frame *rtda.Frame){
 	_fcmp(frame, false)
 }
