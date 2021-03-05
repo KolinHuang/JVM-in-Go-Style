@@ -2,17 +2,14 @@ package main
 
 import (
 	"fmt"
-	"jvmgo/chap05/classfile"
-	"jvmgo/chap05/classpath"
-	"jvmgo/chap05/rtda"
+	"jvmgo/chap06/classfile"
+	"jvmgo/chap06/classpath"
+	"jvmgo/chap06/rtda"
 	"strings"
 )
 
 func main() {
 	cmd := parseCmd()
-	cmd.Xjre = "/Library/Java/JavaVirtualMachines/jdk1.8.0_201.jdk/Contents/Home/jre"
-	cmd.clspath = "/Users/huangyucai/Documents/code/git_depositorys/github_KolinHuang/JVM-in-Go-Style/javafiles/"
-	cmd.class = "GaussTest"
 	if cmd.versionFlag {
 		fmt.Println("version: 0.0.1")
 	} else if cmd.helpFlag || cmd.class == ""{

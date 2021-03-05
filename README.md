@@ -2365,5 +2365,732 @@ chap05 -Xjre /Library/Java/JavaVirtualMachines/jdk1.8.0_201.jdk/Contents/Home/jr
 
 在局部变量表中得到了sum = 5050的结果，测试成功。
 
+至此分析一波方法执行的流程：
+
+* 首先将命令行参数解析到cmd对象中，然后调用startJVM开始运行JVM；
+
+* 调用classPath.Parse()方法解析类路径：
+
+  * 使用-Xjre选项指定的类路径来解析启动类路径和扩展类路径；
+  * 使用-clspath选项指定的类路径来解析用户类路径。
+
+* 调用loadClass方法加载类：
+
+  * 调用cp.ReadClass方法读取主类文件
+
+    * 优先从启动类路径下查找类文件：self.bootClasspath.readClass(className)
+    * 其次在扩展类路径下查找类文件：self.extClasspath.readClass(className)
+    * 最后在用户类路径下查找类文件：self.userClasspath.readClass(className)
+    * 最终在用户类路径下查找到类文件，然后调用ioutil包下的ReadFile读取类文件，并返回字符数组。
+
+  * 调用classfile.Parse方法对该类文件的字符数组进行解析，严格按JVM规范将所有数据填入ClassFile结构体中：
+
+    * 创建了一个类文件读取器ClassReader来辅助读取类文件，在ClassReader中定义了许多读取类文件的方法，可以按比特数量读取字符流。
+
+    * 调用了ClassFile的read方法来解析字符数组：
+
+      * ```go
+        self.readAndCheckMagic(reader)//读魔数
+        self.readAndCheckVersion(reader)//检查版本号
+        self.constantPool = readConstantPool(reader)//读常量池
+        self.accessFlags = reader.readUint16()
+        self.thisClass = reader.readUint16()
+        self.superClass = reader.readUint16()
+        self.interfaces = reader.readUint16s()
+        //以下三者都需要用到常量池中的字面量或者符号引用
+        self.fields = readMembers(reader, self.constantPool)
+        self.methods = readMembers(reader, self.constantPool)
+        self.attributes = readAttributes(reader, self.constantPool)
+        ```
+
+* 调用getMainMethod获取Main方法
+
+* 调用interpret方法来解释运行Main方法
+
+  * 获取方法的Code属性、最大栈深度、最大局部变量表长度以及字节码。
+
+  * 创建一个线程，再为线程创建Java虚拟机栈帧，根据最大栈深度、最大局部变量表长度创建操作数栈和局部变量表。
+
+  * 将栈帧压入Java虚拟机栈中。
+
+  * 运行loop方法：
+
+    * 将栈帧弹出，创建一个字节码读取器BytecodeReader，循环读取指令并执行：
+
+      * 取PC值，并设置到PC计数器中。
+      * 根据PC值取操作码opcode，第一个操作码为3，对应了指令iconst_0，将int型常量0压入操作数栈中。
+      * 根据opcode创建指令实例。
+      * 根据指令实例取操作数。
+      * 执行指令。
+      * 重复上述步骤。
+
+    * 
+
+      
+
+![image-20210305181242965](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210305181242965.png)
 
 
+
+## 6 类和对象
+
+
+
+### 6.1 方法区
+
+
+
+#### 6.1.1 类信息
+
+```go
+type Class struct {
+	accessFlags       uint16	//访问标志
+	name              string // thisClassName
+	superClassName    string	//父类名
+	interfaceNames    []string	//接口名
+	constantPool      *classfile.ConstantPool	//常量池引用
+	fields            []*Field	//字段引用
+	methods           []*Method	//方法引用
+	loader            *ClassLoader	//类加载器引用
+	superClass        *Class	//父类引用
+	interfaces        []*Class	//接口引用
+	instanceSlotCount uint		//实例槽总数
+	staticSlotCount   uint		//静态槽总数
+	staticVars        Slots		//静态变量
+}
+```
+
+accessFlags是类的访问标志，字段和方法也有访问标志，但具体标志位的含义有所不同，因此根据JVM规范，将各个比特为的含义统一定义在access.flags.go文件中。
+
+![image-20210305174714029](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210305174714029.png)
+
+```go
+const (
+	ACC_PUBLIC       = 0x0001 // class field method
+	ACC_PRIVATE      = 0x0002 //       field method
+	ACC_PROTECTED    = 0x0004 //       field method
+	ACC_STATIC       = 0x0008 //       field method
+	ACC_FINAL        = 0x0010 // class field method
+	ACC_SUPER        = 0x0020 // class
+	ACC_SYNCHRONIZED = 0x0020 //             method
+	ACC_VOLATILE     = 0x0040 //       field
+	ACC_BRIDGE       = 0x0040 //             method
+	ACC_TRANSIENT    = 0x0080 //       field
+	ACC_VARARGS      = 0x0080 //             method
+	ACC_NATIVE       = 0x0100 //             method
+	ACC_INTERFACE    = 0x0200 // class
+	ACC_ABSTRACT     = 0x0400 // class       method
+	ACC_STRICT       = 0x0800 //             method
+	ACC_SYNTHETIC    = 0x1000 // class field method
+	ACC_ANNOTATION   = 0x2000 // class
+	ACC_ENUM         = 0x4000 // class field
+)
+```
+
+name, superClassName和interfaceNames字段分别存放类名、超类名以及接口名，这些类名都是完全限定名，具有java/lang/Object前缀。constantPool字段存放运行时常量池指针,fields和methods字段分别存放字段表和方法表。
+
+
+
+#### 6.1.2 字段信息
+
+字段与方法都属于类的成员，它们有一些共同的信息（访问标志、名字、描述符）。我们将这些信息抽象出来，放到一个结构体中：
+
+```go
+type ClassMember struct {
+	accessFlags uint16	//访问标志
+	name        string	//简单名称
+	descriptor  string	//描述符
+	class       *Class	//所属类引用
+}
+```
+
+接下来定义字段结构：
+
+```go
+type Field struct {
+	ClassMember
+	constValueIndex uint
+	slotId          uint
+}
+```
+
+
+
+
+
+#### 6.1.3 方法信息
+
+方法比字段稍微复杂一点，因为方法中有字节码：
+
+```go
+type Method struct {
+	ClassMember
+	maxStack  uint16
+	maxLocals uint16
+	code      []byte
+}
+```
+
+
+
+到此为止，出了ConstantPool还没有介绍以外，已经定义了4个结构体，这些结构体之间的关系如下：
+
+![image-20210305191409647](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210305191409647.png)
+
+
+
+
+
+### 6.2 运行时常量池
+
+运行时常量池主要存放两类信息：字面量（literal）和符号引用（symbolic reference）。字面量包括整数、浮点数和字符串字面量；符号引用包括类符号引用、字段符号引用、类方法符号引用和接口方法符号引用。
+
+```go
+type Constant interface{}
+
+type ConstantPool struct {
+	class  *Class
+	consts []Constant//存放常量
+}
+```
+
+```go
+//核心逻辑就是把[]classfile.ConstantInfo转换成[]heap.Constant。
+func newConstantPool(class *Class, cfCp classfile.ConstantPool) *ConstantPool {
+	cpCount := len(cfCp)
+	consts := make([]Constant, cpCount)
+	rtCp := &ConstantPool{class, consts}
+
+	for i := 1; i < cpCount; i++ {
+		cpInfo := cfCp[i]
+		switch cpInfo.(type) {
+		case 
+      ....
+		default:
+			// todo
+		}
+	}
+	return rtCp
+}
+```
+
+
+
+#### 6.2.1 类符号引用
+
+类符号引用、字段符号引用、类方法符号引用和接口方法符号引用有一些共性，所以将其抽取出建立结构体：
+
+```go
+type SymRef struct {
+	cp        *ConstantPool
+	className string
+	class     *Class
+}
+```
+
+cp字段存放符号引用所在的运行时常量池指针，这样就可以通过符号引用访问到运行时常量池，进一步访问到类数据。className存放类的全限定名。class字段缓存解析后的类结构体指针。
+
+对于类符号引用，只要有类名就可以解析符号引用。
+
+对于字段，首先要解析类符号引用得到类数据，然后用字段名和描述符查找字段数据。
+
+方法符号引用的解析过程和字段符号引用类似。
+
+
+
+定义ClassRef结构体：
+
+```go
+type ClassRef struct {
+	SymRef
+}
+```
+
+根据class文件中存储的类常量创建ClassRef实例：
+
+```go
+func newClassRef(cp *ConstantPool, classInfo *classfile.ConstantClassInfo) *ClassRef {
+	ref := &ClassRef{}
+	ref.cp = cp
+	ref.className = classInfo.Name()
+	return ref
+}
+```
+
+
+
+#### 6.2.2 字段符号引用
+
+定义MemberRef结构体来存放字段和方法符号引用共有的信息：
+
+```go
+type MemberRef struct {
+	SymRef
+	name       string
+	descriptor string
+}
+```
+
+在JVM规范中，并没有规定一个类的字段名不能相同，其只规定了两个字段的描述符+字段名必须不同。这也就是为什么字段符号引用还需要描述符来表示的原因。
+
+创建字段符号引用：
+
+```go
+type FieldRef struct {
+	MemberRef
+	field *Field
+}
+```
+
+field字段缓存解析后的字段指针。
+
+
+
+#### 6.2.3 方法符号引用
+
+```go
+type MethodRef struct {
+	MemberRef
+	method *Method
+}
+```
+
+
+
+#### 6.2.4 接口方法符号引用
+
+```go
+type InterfaceMethodRef struct {
+	MemberRef
+	method *Method
+}
+```
+
+
+
+至此所有的符号引用都已经定义完毕，他们的继承结构图如下：
+
+![image-20210305195051976](/Users/huangyucai/Library/Application Support/typora-user-images/image-20210305195051976.png)
+
+
+
+### 6.3 类加载器
+
+Java虚拟机的类加载系统十分复杂，本节将初步实现一个简化版的类加载器:
+
+```go
+/*
+class names:
+    - primitive types: boolean, byte, int ...
+    - primitive arrays: [Z, [B, [I ...
+    - non-array classes: java/lang/Object ...
+    - array classes: [Ljava/lang/Object; ...
+*/
+type ClassLoader struct {
+	cp       *classpath.Classpath
+	classMap map[string]*Class // loaded classes
+}
+```
+
+ClassLoader依赖Classpath来搜索和读取class文件，cp字段保存Classpath指针。
+
+classMap字段记录已经加载的类数据，key是类的完全限定名。我们可以把classMap当作方法区的具体实现，其中存储着类数据。
+
+LoadClass方法把类数据加载到方法区：
+
+```go
+func (self *ClassLoader) LoadClass(name string) *Class {
+	if class, ok := self.classMap[name]; ok {
+		// already loaded
+		return class
+	}
+	return self.loadNonArrayClass(name)
+}
+```
+
+先查找classMap，看类是否已经被加载，如果是，直接返回类数据，否则调用loadNonArrayClass方法加载类。数组类和普通类又很大不同，它的数据并不是来自class文件，而是由Java虚拟机在运行期间生成的。目前我们展示不考虑数组类。loadNonArrayClass方法如下：
+
+```go
+func (self *ClassLoader) loadNonArrayClass(name string) *Class {
+	data, entry := self.readClass(name)
+	class := self.defineClass(data)
+	link(class)
+	fmt.Printf("[Loaded %s from %s]\n", name, entry)
+	return class
+}
+```
+
+类的加载大致可以分为三个步骤：首先找到class文件并把数据读取到内存；然后解析class文件，生成虚拟机可以使用的类数据，并放入方法区；最后进行链接。
+
+
+
+#### 6.3.1 readClass方法
+
+```go
+func (self *ClassLoader) readClass(name string) ([]byte, classpath.Entry) {
+	data, entry, err := self.cp.ReadClass(name)
+	if err != nil {
+		panic("java.lang.ClassNotFoundException: " + name)
+	}
+	return data, entry
+}
+```
+
+实际上调用Classpath的ReadClass方法。
+
+
+
+#### 6.3.2 defineClass方法
+
+```go
+func (self *ClassLoader) defineClass(data []byte) *Class {
+	class := parseClass(data)
+	class.loader = self
+	resolveSuperClass(class)
+	resolveInterfaces(class)
+	self.classMap[class.name] = class
+	return class
+}
+```
+
+首先调用parseClass函数把class文件数据转换成Class结构体。
+
+```go
+func parseClass(data []byte) *Class {
+	cf, err := classfile.Parse(data)//将数据读取为classfile
+	if err != nil {
+		//panic("java.lang.ClassFormatError")
+		panic(err)
+	}
+	return newClass(cf)//将classfile解析成Class结构
+}
+```
+
+Class结构体的superClass和interfaces字段存放超类名以及直接接口表，这些类名都是符号引用。根据JVM规范5.3.5，调用resolveSuperClass()和resolveInterfaces()函数解析这些类符号引用。
+
+```go
+// jvms 5.4.3.1
+func resolveSuperClass(class *Class) {
+	if class.name != "java/lang/Object" {
+		class.superClass = class.loader.LoadClass(class.superClassName)
+	}
+}
+func resolveInterfaces(class *Class) {
+	interfaceCount := len(class.interfaceNames)
+	if interfaceCount > 0 {
+		class.interfaces = make([]*Class, interfaceCount)
+		for i, interfaceName := range class.interfaceNames {
+			class.interfaces[i] = class.loader.LoadClass(interfaceName)
+		}
+	}
+}
+```
+
+递归调用LoadClass方法来加载它的超类和直接接口。
+
+#### 6.3.3 link()
+
+解析分为以下三个阶段：
+
+* **验证（Verify）**：目的在于确保class文件的字节流中包含的信息符合当前虚拟机的要求，保证被加载类的正确性，不会危害虚拟机的自身安全。主要包括四种验证：**文件格式验证**、**元数据验证**、**字节码验证**、**符号引用验证**。
+
+  * **文件格式验证：**
+
+    * 是否以魔数`0xCAFEBABE`开头。
+    * 主次版本号是否在当前Java虚拟机接受范围之内。
+    * 常量池的常量中是否有不被支持的常量类型（检查常量tag标志）。
+    * 指向常量的各种索引值中是否有**指向不存在的常量**或**不符合类型的常量**。
+    * CONSTANT_Utf8_info型的常量中是否有不符合UTF-8编码的数据。
+    * Class文件中各个部分及文件本身是否有被删除的或附加的其他信息。
+
+    此验证阶段是**基于二进制字节流进行的**，只有通过了这个阶段的验证之后，这段字节流才被允许进入Java虚拟机内存的方法区中进行存储，所以后面的三个验证阶段全部是**基于方法区的存储结构上进行的**，不会再直接读取、操作字节流了。
+
+  * **元数据验证：**对字节码描述的信息进行语义分析，以保证其描述的信息符合《Java语言规范》的要求：
+
+    * 这个类是否有父类（除了java.lang.Object之外，所有的类都应当有父类）
+    * 这个类的父类是否继承了不允许被继承的类（被final修饰的类）。
+    * 如果这个类不是抽象类，是否实现了其父类或接口之间要求实现的所有方法。
+    * 类中的字段、方法是否与父类产生矛盾（例如覆盖了父类的final字段，或者出现了不符合规则的方法重载，例如方法参数都一致，但返回值类型却不同等）
+
+  * **字节码验证：**通过数据流分析和控制流分析，确定程序语义是合法的、符合逻辑的。对类的方法体（Class文件的Code属性）进行校验分析，保证被校验类的方法在运行时不会做出危害虚拟机安全的行为。
+
+    * 保证任意时刻操作数栈的数据类型与指令代码序列都能配合工作，例如不会出现类似于“在操作数栈放置了一个int类型的数据，使用时却按long类型来加载入本地变量表”这样的情况。
+    * 保证任何跳转指令都不会跳转到方法体以外的字节码指令上。
+    * 保证方法体中的类型转换总是有效的。例如可以把一个子类对象赋值给父类数据类型。
+
+    即使字节码验证阶段进行了再大量、再严密的检查，也依然不能保证方法体一定是安全的。涉及到离散数学中的停机问题，即不能通过程序准确地检查出程序是否能在有限的时间之内结束运行。
+
+    由于数据流分析和控制流分析的高度复杂性，Java虚拟机的设计团队为了避免过多的执行时间消 耗在字节码验证阶段中，在JDK 6之后的Javac编译器和Java虚拟机里进行了一项联合优化，把尽可能 多的校验辅助措施挪到Javac编译器里进行。
+
+  * **符号引用验证：**此校验行为发生在虚拟机将符号引用转化为直接引用的时候。符号引用验证可以看作是对类自身以外（常量池中的各种符号引用）的各类信息进行匹配性校验，通俗来说就是，该类是否缺少或者被禁止访问它依赖的某些外部类、方法、字段等资源。
+
+    * 符号引用中通过字符串描述的全限定类名是否能找到对应的类。
+    * 在指定类中是否存在符合方法的字段描述符及简单名称说描述的方法和字段。
+    * 符号引用中的类、字段、方法的可访问性（private、protected、public、<package>）是否可被当前类访问。
+
+* **准备（Prepare）**：为**类变量**分配内存并且设置该类变量的**默认初始值，即零值**。这里**不包含用final修饰的static变量**，因为final在编译的时候就会分配了，准备阶段会显式初始化。这里**不会为实例变量分配初始化**，类变量会分配在方法区中，而**实例变量是会随着对象一起分配到Java堆**当中，所以在这个阶段对象还没创建，故实例变量不会被初始化。
+
+* **解析（Resolve）**：将常量池的**符号引用转换为直接引用**的过程。事实上，解析操作往往会在JVM执行完初始化之后再执行。符号引用就是一组符号来描述所引用的目标。符号引用的字面量形式明确定义在《Java虚拟机规范》的Class文件格式中。直接引用就是直接指向目标的指针、相对偏移量或间接定位到目标的句柄。下图就是符号引用：
+
+  <img src="/Users/huangyucai/Library/Application Support/typora-user-images/image-20201212155028986.png" alt="image-20201212155028986" style="zoom:50%;" />
+
+  解析动作主要针对类或接口、字段、类方法、接口方法、方法类型等。对应常量池中的`CONSTANT_Class_info`、`CONSTANT_Fieldref_info`、`CONSTANT_Methodref_info`等。
+
+  《Java虚拟机规范》之中并未规定解析阶段发生的具体时间，只要求了在执行ane-warray、 checkcast、getfield、getstatic、instanceof、invokedynamic、invokeinterface、invoke-special、 invokestatic、invokevirtual、ldc、ldc_w、ldc2_w、multianewarray、new、putfield和putstatic这17个用于 操作符号引用的字节码指令之前，先对它们所使用的符号引用进行解析。所以虚拟机实现可以根据需要来自行判断，到底是在类被加载器加载时就对常量池中的符号引用进行解析，还是等到一个符号引用将要被使用前才去解析它。
+
+  类似地，对方法或者字段的访问，也会在解析阶段中对它们的可访问性（public、protected、 private、<package>）进行检查
+
+  * **类或接口的解析**
+  * **字段解析：**如果如果有一个同名字段同时出现在某个类的接口和父类中，Javac编译器将提示“The fild xxx is ambiguous”，并且拒绝编译这段代码。首先搜索当前类、再搜索当前类实现的接口及其父接口，最后搜索父类
+  * **方法解析**：首先搜索当前类，再搜索父类，最后搜索接口和父接口。
+  * **接口方法解析**
+
+
+
+在这本书中，作者没有选择实现验证过程。本来我想实现一下的，但是看到JVM规范中验证算法的篇幅：
+
+![image-20210305203445251](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210305203445251.png)
+
+还是算了吧...
+
+不过验证的主要内容已经在上文说清楚了。
+
+
+
+### 6.4 对象、实例变量和类变量
+
+和局部变量类似，实例变量和类变量也可以放在Slot中。所以给实例变量和类变量同样定义一个变量表：
+
+```go
+type Slot struct {
+	num int32
+	ref *Object
+}
+
+type Slots []Slot
+```
+
+
+
+接下来给Object结构体添加两个字段：
+
+```go
+type Object struct {
+	class  *Class
+	fields Slots
+}
+```
+
+接下来的问题是，如何知道静态变量和实例变量需要多少空间，以及哪个字段对应Slots中的哪个位置呢？
+
+第一个问题：数数。递归地数父类静态变量和实例变量的数字。
+
+第二个问题：在数字段的时候，给字段按顺序编号即可。有几个注意点：
+
+* 首先，静态字段和实例字段要分开编号。
+* 对于实例字段，一定要从继承关系的最顶端，也就是java.lang.Object开始编号。
+* 最后，编号时，要考虑long和double是占两个slot的。
+
+定义prepare函数，完成以上需求：
+
+```go
+// jvms 5.4.2
+func prepare(class *Class) {
+	calcInstanceFieldSlotIds(class)
+	calcStaticFieldSlotIds(class)
+	allocAndInitStaticVars(class)
+}
+```
+
+calcInstanceFieldSlotIds函数计算实例字段的个数，同时给它们编号，代码如下：
+
+```go
+func calcInstanceFieldSlotIds(class *Class) {
+	slotId := uint(0)
+	if class.superClass != nil {
+		slotId = class.superClass.instanceSlotCount
+	}
+	for _, field := range class.fields {
+		if !field.IsStatic() {
+			field.slotId = slotId
+			slotId++
+			if field.isLongOrDouble() {
+				slotId++
+			}
+		}
+	}
+	class.instanceSlotCount = slotId
+}
+```
+
+calcStaticFieldSlotIds函数计算静态字段的个数，同时给它们编号，代码如下：
+
+```go
+func calcStaticFieldSlotIds(class *Class) {
+	slotId := uint(0)
+	for _, field := range class.fields {
+		if field.IsStatic() {
+			field.slotId = slotId
+			slotId++
+			if field.isLongOrDouble() {
+				slotId++
+			}
+		}
+	}
+	class.staticSlotCount = slotId
+}
+```
+
+allocAndInitStaticVars函数给**类变量(注意：这里没有 实例变量初始化)**分配空间，然后给它们赋予初始值，代码如下：
+
+```go
+func allocAndInitStaticVars(class *Class) {
+	class.staticVars = newSlots(class.staticSlotCount)
+	for _, field := range class.fields {
+		if field.IsStatic() && field.IsFinal() {//
+			initStaticFinalVar(class, field)
+		}
+	}
+}
+```
+
+如果静态变量属于基本类型或者String类型，且用final修饰，那么它的值在编译期就已知，存储在class文件的常量池中，initStaticFinalVar函数从常量池中加载常量值，然后给静态变量赋值：
+
+```go
+func initStaticFinalVar(class *Class, field *Field) {
+	vars := class.staticVars
+	cp := class.constantPool
+	cpIndex := field.ConstValueIndex()//获取static final的常量值索引
+	slotId := field.SlotId()
+
+	if cpIndex > 0 {
+		switch field.Descriptor() {
+		case "Z", "B", "C", "S", "I":
+			val := cp.GetConstant(cpIndex).(int32)
+			vars.SetInt(slotId, val)
+		case "J":
+			val := cp.GetConstant(cpIndex).(int64)
+			vars.SetLong(slotId, val)
+		case "F":
+			val := cp.GetConstant(cpIndex).(float32)
+			vars.SetFloat(slotId, val)
+		case "D":
+			val := cp.GetConstant(cpIndex).(float64)
+			vars.SetDouble(slotId, val)
+		case "Ljava/lang/String;":
+			panic("todo")
+		}
+	}
+}
+```
+
+Go语言会保证新创建的Slot结构体有默认的值，所以我们无需任何操作就能保证静态变量有默认的初始值0和ni l。
+
+
+
+
+
+### 6.5 类和字段符号引用解析
+
+
+
+#### 6.5.1 类符号引用解析
+
+在cp_symref.go文件中定义ResolvedClass方法：
+
+```go
+func (self *SymRef) ResolvedClass() *Class {
+	if self.class == nil {
+		self.resolveClassRef()
+	}
+	return self.class
+}
+```
+
+如果类符号引用已经解析，ResolvedClass方法直接返回类指针，否则调用resolveClassRef方法进行解析：
+
+```go
+// jvms8 5.4.3.1
+func (self *SymRef) resolveClassRef() {
+	d := self.cp.class
+	c := d.loader.LoadClass(self.className)
+	if !c.isAccessibleTo(d) {
+		panic("java.lang.IllegalAccessError")
+	}
+
+	self.class = c
+}
+```
+
+解析类的步骤：
+
+To resolve an unresolved symbolic reference from D to a class or interface C denoted by `N`, the following steps are performed:
+
+1. The defining class loader of D is used to create a class or interface denoted by `N`. This class or interface is C. The details of the process are given in [§5.3](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-5.html#jvms-5.3).
+
+   Any exception that can be thrown as a result of failure of class or interface creation can thus be thrown as a result of failure of class and interface resolution.
+
+2. If C is an array class and its element type is a `reference` type, then a symbolic reference to the class or interface representing the element type is resolved by invoking the algorithm in [§5.4.3.1](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-5.html#jvms-5.4.3.1) recursively.
+
+3. Finally, access permissions to C are checked.
+
+   - If C is not accessible ([§5.4.4](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-5.html#jvms-5.4.4)) to D, class or interface resolution throws an `IllegalAccessError`.
+
+     This condition can occur, for example, if C is a class that was originally declared to be `public` but was changed to be non-`public` after D was compiled.
+
+If steps 1 and 2 succeed but step 3 fails, C is still valid and usable. Nevertheless, resolution fails, and D is prohibited from accessing C.
+
+![image-20210305211104696](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210305211104696.png)
+
+
+
+
+
+#### 6.5.2 字段符号引用解析
+
+Therefore, any exception that can be thrown as a result of failure of resolution of a class or interface reference can be thrown as a result of failure of field resolution. If the reference to C can be successfully resolved, an exception relating to the failure of resolution of the field reference itself can be thrown.
+
+When resolving a field reference, field resolution first attempts to look up the referenced field in C and its superclasses:
+
+1. If C declares a field with the name and descriptor specified by the field reference, field lookup succeeds. The declared field is the result of the field lookup.
+2. Otherwise, field lookup is applied recursively to the direct superinterfaces of the specified class or interface C.
+3. Otherwise, if C has a superclass S, field lookup is applied recursively to S.
+4. Otherwise, field lookup fails.
+
+Then:
+
+- If field lookup fails, field resolution throws a `NoSuchFieldError`.
+
+- Otherwise, if field lookup succeeds but the referenced field is not accessible ([§5.4.4](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-5.html#jvms-5.4.4)) to D, field resolution throws an `IllegalAccessError`.
+
+- Otherwise, let `<`E, `L1``>` be the class or interface in which the referenced field is actually declared and let `L2` be the defining loader of D.
+
+  Given that the type of the referenced field is Tf, let T be Tf if Tf is not an array type, and let T be the element type ([§2.4](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-2.html#jvms-2.4)) of Tf otherwise.
+
+
+
+![image-20210305211512717](/Users/huangyucai/Library/Application Support/typora-user-images/image-20210305211512717.png)
+
+
+
+### 6.6 类和对象相关指令
+
+* new创建类实例。
+* putstatic和getstatic用于存取静态变量。
+* putfield和getfield用于存取实例变量。
+* instanceof和checkcast用于判断对象是否属于某种类型。
+* ldc系列指令把运行时常量池中的常量推到操作数栈顶。
+
+
+
+#### 6.6.1 new指令
+
+new是专门用来创建类实例的，数组由专门的指令创建。
+
+```go
+type NEW struct{ base.Index16Instruction }
+```
+
+new指令的操作数是一个uint16索引，来自字节码。通过这个索引，可以从当前类的运行时常量池中找到一个类符号引用。解析这个符号引用，拿到类数据，然后创建对象，并把对象引用推入栈顶，new指令的工作就完成了。
+
+按照JVM规定， 接口 和抽象类是不能被实例化的，需要抛出InstantiationError异常。另外，如果解析后的类还没有初始化，则需要先初始化类。初始化放在后面实现了方法调用后再实现。
