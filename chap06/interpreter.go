@@ -2,35 +2,25 @@ package main
 
 import (
 	"fmt"
-	"jvmgo/chap06/classfile"
 	"jvmgo/chap06/instructions"
 	"jvmgo/chap06/instructions/base"
 	"jvmgo/chap06/rtda"
+	"jvmgo/chap06/rtda/heap"
 )
 
-func interpret(methodInfo *classfile.MemberInfo){
-	//获得到方法的Code属性
-	codeAttr := methodInfo.CodeAttribute()
-	//获得最大栈深度
-	maxLocals := codeAttr.MaxLocals()
-	//获得最大局部变量表长度
-	maxStack := codeAttr.MaxStack()
-	//获得字节码
-	bytecode := codeAttr.Code()
-
+func interpret(method *heap.Method){
 	thread := rtda.NewThread()
-	frame := thread.NewFrame( maxLocals, maxStack)
+	frame := thread.NewFrame(method)
 	thread.PushFrame(frame)
-
 	defer catchErr(frame)
-	loop(thread, bytecode)
+	loop(thread, method.Code())
 }
 
 func catchErr(frame *rtda.Frame){
 	if r := recover(); r != nil{
-		fmt.Printf("LocalVars:%v\n", frame.LocalVars())
-		fmt.Printf("OperandStack:%v\n", frame.OperandStack())
-		panic(r)
+		//fmt.Printf("LocalVars:%v\n", frame.LocalVars())
+		//fmt.Printf("OperandStack:%v\n", frame.OperandStack())
+		//panic(r)
 	}
 }
 

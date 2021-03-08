@@ -30,6 +30,7 @@ func newClass(cf *classfile.ClassFile) *Class{
 	class.constantPool = newConstantPool(class, cf.ConstantPool())
 	class.fields = newFields(class, cf.Fields())
 	class.methods = newMethods(class, cf.Methods())
+	return class
 }
 
 func (self *Class) IsPublic() bool {

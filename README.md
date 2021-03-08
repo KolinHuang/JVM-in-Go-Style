@@ -3069,7 +3069,7 @@ Then:
 
 
 
-![image-20210305211512717](/Users/huangyucai/Library/Application Support/typora-user-images/image-20210305211512717.png)
+![image-20210305211512717](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210305211512717.png)
 
 
 
@@ -3094,3 +3094,141 @@ type NEW struct{ base.Index16Instruction }
 new指令的操作数是一个uint16索引，来自字节码。通过这个索引，可以从当前类的运行时常量池中找到一个类符号引用。解析这个符号引用，拿到类数据，然后创建对象，并把对象引用推入栈顶，new指令的工作就完成了。
 
 按照JVM规定， 接口 和抽象类是不能被实例化的，需要抛出InstantiationError异常。另外，如果解析后的类还没有初始化，则需要先初始化类。初始化放在后面实现了方法调用后再实现。
+
+
+
+#### 6.6.2 putstatic和getstatic指令
+
+用于存取类的静态变量。
+
+putstatic指令给类的某个静态变量赋值，它需要两个操作数：
+
+* 第一个操作数是uint16索引，来自字节码。通过这个索引可以从当前类的运行时常量池中找到一个字段符号引用，解析这个符号引用就可以知道给类的哪个静态变量赋值。
+* 第二个操作数是要赋给静态变量的值，从操作数栈中弹出。
+
+getstatic指令取出某个静态变量值，然后推入栈顶。getstatic指令只需要一个操作数。
+
+> 目前，指令的操作数来源有三项：
+>
+> 1. 来自指令本身
+> 2. 来自字节码
+> 3. 来自操作数栈
+
+
+
+#### 6.6.3 putfiled和putfield指令
+
+putfield指令给实例变量赋值，需要三个操作数：
+
+* 前两个操作数是常量池索引和变量值，用法和putstatic一样。
+* 第三个操作数是对象引用，从操作数中弹出。
+
+
+
+getfield指令获取实例变量值，然后推入操作数栈，需要两个操作数：
+
+* 第一个是uint16常量池索引。
+* 第二个操作数是对象引用。
+
+
+
+#### 6.6.4 instanceof和checkcast指令
+
+instance指令判断对象是否是某个类的实例（活着对象的类是否实现了某个接口），并把结果推入操作数栈。需要两个操作数：
+
+* 第一个是uint16索引，通过这个索引可以从当前类的运行时常量池找到一个类符号引用。
+* 第二个操作数是对象引用，从操作数栈中弹出。
+
+
+
+checkcast指令和instanceof指令很像，区别在于：instanceof指令会改变操作数栈（弹出对象引用，推入判断结果）；checkcast则不能改变操作数栈（如果判断失败，直接抛出ClassCastException异常）。
+
+
+
+#### 6.6.5 ldc指令
+
+ldc系列指令从运行时常量池加载常量值，并把它推入操作数栈。ldc系列指令属于常量类指令，共3条：
+
+* ldc和ldc_w指令用于加载int、float和字符串常量，java.lang.Class实例或者MethodType和MethodHandle实例。ldc和ldc_w的区别仅在于操作数的宽度。
+* ldc2_w指令用于加载long和double常量。
+
+
+
+### 6.7 测试
+
+修改main方法：
+
+```go
+func main() {
+	cmd := parseCmd()
+	cmd.Xjre = "/Library/Java/JavaVirtualMachines/jdk1.8.0_201.jdk/Contents/Home/jre"
+	cmd.clspath = "/Users/huangyucai/Documents/code/git_depositorys/github_KolinHuang/JVM-in-Go-Style/javafiles/"
+	cmd.class = "GaussTest"
+	if cmd.versionFlag {
+		fmt.Println("version: 0.0.1")
+	} else if cmd.helpFlag || cmd.class == ""{
+		//用户指定了helpFlag参数或者未指定主类，就打印命令用法
+		printUsage()
+	} else {
+		//一切正常就启动Java虚拟机
+		startJVM(cmd)
+	}
+}
+
+func startJVM(cmd *Cmd){
+	cp := classpath.Parse(cmd.Xjre, cmd.clspath)
+	classLoader := heap.NewClassLoader(cp)
+	className := strings.Replace(cmd.class, ".", "/", -1)
+	mainClass := classLoader.LoadClass(className)
+	mainMethod := mainClass.GetMainMethod()
+
+	if mainMethod == nil {
+		fmt.Printf("Main method not found in class %s\n", cmd.class)
+	}else{
+		interpret(mainMethod)
+	}
+}
+```
+
+先创建ClassLoader实例，然后用它来加载主类，最后执行主类的main方法。
+
+Class结构体的GetMainMethod：
+
+```go
+func (self *Class) GetMainMethod() *Method {
+   return self.getStaticMethod("main", "([Ljava/lang/String;)V")
+}
+
+func (self *Class) getStaticMethod(name, descriptor string) *Method {
+   for _, method := range self.methods {
+      if method.IsStatic() &&
+         method.name == name &&
+         method.descriptor == descriptor {
+
+         return method
+      }
+   }
+   return nil
+}
+```
+
+修改解释器：
+
+```go
+func interpret(method *heap.Method){
+	thread := rtda.NewThread()//创建线程
+	frame := thread.NewFrame(method)//创建栈帧
+	thread.PushFrame(frame)//栈帧入Java虚拟机栈
+	defer catchErr(frame)
+	loop(thread, method.Code())//执行方法
+}
+```
+
+
+
+对象需要初始化，所以每个类都至少有一个构造函数。即使用户自己不定义，编译器也会自动生成一个默认构造器。在创建类实例的时候，编译器会在new指令的后面加入invokespecial指令来调用构造器初始化对象。
+
+测试结果：
+
+![image-20210308192445710](/Users/huangyucai/Library/Application Support/typora-user-images/image-20210308192445710.png)
+

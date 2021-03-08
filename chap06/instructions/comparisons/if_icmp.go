@@ -1,8 +1,8 @@
 package comparisons
 
 import (
-	"jvmgo/chap05/instructions/base"
-	"jvmgo/chap05/rtda"
+	"jvmgo/chap06/instructions/base"
+	"jvmgo/chap06/rtda"
 )
 
 // Branch if int comparison succeeds
