@@ -3232,3 +3232,279 @@ func interpret(method *heap.Method){
 
 ![image-20210308192445710](/Users/huangyucai/Library/Application Support/typora-user-images/image-20210308192445710.png)
 
+
+
+### 小结
+
+本章实现了方法区、运行时常量池、类和对象结构体、一个简单的类加载器，以及ldc和部分引用指令。
+
+
+
+
+
+## 7 方法调用和返回
+
+
+
+### 7.1 方法调用概述
+
+从调用的角度来看，方法可以分为两类：静态方法（类方法）和实例方法。静态方法通过类来调用，实例方法通过对象引用来调用。静态方法是静态绑定的，也就是说，最终调用的是哪个方法在编译期就已经确定。实例方法则支持动态绑定，最终调用哪个方法可能要推迟到运行期才能知道。
+
+从实现的角度来看，方法可以分为三类：没有实现（抽象方法）、用Java语言（或者JVM上的其他语言，如Groovy和Scala）实现以及用本地语言（C和C++）实现。静态方法和抽象方法是互斥的。在Java8 之前，接口只能包含抽象方法。为了实现Lambda表达式，Java 8放宽了这一限制，在接口中也可以定义静态方法和默认方法（本实现不考虑实现这两种方法）。
+
+在Java7之前，JVM规范一共一共了4条方法调用指令：
+
+1. invokestatic指令用来调用静态方法。
+2. invokespecial指令用来调用无需动态绑定的实例方法，包括构造函数、私有方法和通过super关键字调用的超类方法。
+3. 如果针对接口的引用调用方法，就使用invokeinterface指令，否则使用invokevirtual指令。
+
+为了更好地支持动态类型语言，Java7增加了一条方法调用指令invokedynamic指令。
+
+**JVM是如何调用方法的？**
+
+首先，方法调用指令需要n+1个操作数，其中第1个操作数是uint16索引，在字节码中紧跟在指令操作码后，通过这个索引，可以从当前类的运行时常量池中找到一个方法符号引用，解析这个符号引用就可以得到一个方法。这个方法并不一定就是最终调用的方法，可能还需要一个查找过程（invokevirtual指令）才能找到最终要调用的方法。剩下的n个操作数是要被传递给调用方法的参数，从操作数栈中弹出。
+
+如果要执行的是Java方法（非native），下一步是给这个方法创建一个新的帧，并把它推到Java虚拟机栈顶。传递参数后，新的方法就可以开始执行了。
+
+![image-20210308195750042](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210308195750042.png)
+
+方法的最后一条指令是某个返回指令，这个指令负责把方法的返回值推入前一帧的操作数栈顶，然后把当前帧从JVM虚拟机栈中弹出。
+
+
+
+### 7.2 解析方法符号引用
+
+#### 7.2.1 非接口方法符号引用
+
+如果类D想通过方法符号引用访问类C的某个方法，先要解析符号引用得到类C。如果C是接口，则抛出IncompatibleClassChangeError异常，否则根据方法和描述符查找方法。如果找不到对应的方法，则抛出NoSuchMethodError异常，否则检查类D是否有权限访问该方法，如果没有，则抛出IllegalAccessError异常。
+
+
+
+#### 7.2.2 接口方法符号引用
+
+如果能在接口中找到方法，就返回找到的方法，否则调用loopupMethodInInterfaces函数在超接口中寻找。
+
+
+
+### 7.3 方法调用和参数传递
+
+首先，要确定方法的参数在局部变量表中占用多少位置：
+
+* double和long占用2个位置
+* 对于实例方法Java编译器会在参数列表的前面添加一个参数，这个隐藏的参数就是this引用。
+
+假设司机的参数占据n个位置，依次把这n个变量从调用者的操作数栈中弹出，放入被调用方法的局部变量表中，参数传递完成。
+
+在解析方法描述符时，判断传入的参数类型是否为double和long，如果遇到了这两种类型，变量表槽数就多+1。
+
+```go
+func (self *Method) calcArgSlotCount() {
+	parsedDescriptor := parseMethodDescriptor(self.descriptor)
+	for _, paramType := range parsedDescriptor.parameterTypes {
+		self.argSlotCount++
+		if paramType == "J" || paramType == "D" {
+			self.argSlotCount++
+		}
+	}
+	if !self.IsStatic() {
+		self.argSlotCount++ // `this` reference
+	}
+}
+```
+
+
+
+### 7.4 返回指令
+
+方法执行完毕之后，需要把结果返回给调用方。返回指令属于控制指令，一共有6条。6条指令都不需要操作数。
+
+* return：无返回值。把当前帧从Java虚拟机栈中弹出即可。
+* areturn：返回引用。将当前帧弹出，然后把此帧的操作数弹出，然后放入当前帧（与前不同）的操作数栈顶。
+* ireturn：返回int。
+* lreturn：返回long。
+* freturn：返回float。
+* dreturn：返回double。
+
+
+
+### 7.5 方法调用指令
+
+
+
+#### 7.5.1 invokestatic指令
+
+```go
+// Invoke a class (static) method
+type INVOKE_STATIC struct{ base.Index16Instruction }
+```
+
+假定解析符号引用后得到方法M。M必须是静态方法，否则抛出IncompatibleClassChangeError异常。如果声明M方法的类还没有初始化，则先要初始化该类。
+
+对于invokestatic指令，M就是最终要执行的方法，调用InvokeMethod直接执行就可。
+
+
+
+#### 7.5.2 invokespecial指令
+
+先拿到当前类、当前常量池、方法符号引用，然后解析符号引用，拿到解析后的类和方法。
+
+假定从方法符号引用中解析出来的类是C，方法是M。如果M是构造函数，则声明M的类必须是C，否则抛出NoSuchMethodError异常。如果M是静态方法，则抛出IncompatibleClassChangeError异常。
+
+
+
+#### 7.5.3 invokecirtual指令和Invokeinterface指令
+
+An *invokevirtual* instruction is type safe iff all of the following are true:
+
+- Its first operand, `CP`, refers to a constant pool entry denoting a method named `MethodName` with descriptor `Descriptor` that is a member of a class `MethodClassName`.
+- `MethodName` is not `<init>`.
+- `MethodName` is not `<clinit>`.
+- One can validly replace types matching the class `MethodClassName` and the argument types given in `Descriptor` on the incoming operand stack with the return type given in `Descriptor`, yielding the outgoing type state.
+- If the method is `protected`, the usage conforms to the special rules governing access to `protected` members ([§4.10.1.8](https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.10.1.8)).
+
+An *invokeinterface* instruction is type safe iff all of the following are true:
+
+- Its first operand, `CP`, refers to a constant pool entry denoting an interface method named `MethodName` with descriptor `Descriptor` that is a member of an interface `MethodIntfName`.
+- `MethodName` is not `<init>`.
+- `MethodName` is not `<clinit>`.
+- Its second operand, `Count`, is a valid count operand (see below).
+- One can validly replace types matching the type `MethodIntfName` and the argument types given in `Descriptor` on the incoming operand stack with the return type given in `Descriptor`, yielding the outgoing type state.
+
+
+
+#### 小结
+
+>  为什么要单独定义invokeinterface指令？
+
+可以统一用invokevirtual指令，但是会降低效率。
+
+当JVM通过invokevirtual调用方法时，this引用指向某个类（或其子类）的实例。因为类的继承关系是固定的，所以虚拟机采用了一种叫做vtable(virtual method table)的技术加速方法查找。但是当通过invokeinterface指令调用接口方法时，this引用可以指向任何实现了该接口的类的实例，所以无法使用vtable技术。
+
+
+
+### 7.6 改进解释器
+
+改进解释器，令其支持方法调用。
+
+```go
+func loop(thread *rtda.Thread, logInst bool) {
+	reader := &base.BytecodeReader{}
+	for {
+		frame := thread.CurrentFrame()
+		pc := frame.NextPC()
+		thread.SetPC(pc)
+
+		// decode
+		reader.Reset(frame.Method().Code(), pc)
+		opcode := reader.ReadUint8()
+		inst := instructions.NewInstruction(opcode)
+		inst.FetchOperands(reader)
+		frame.SetNextPC(reader.PC())
+
+		if logInst {
+			logInstruction(frame, inst)
+		}
+
+		// execute
+		inst.Execute(frame)
+		if thread.IsStackEmpty() {
+			break
+		}
+	}
+}
+```
+
+在每次循环开始前，先拿到当前帧，然后根据PC从当前方法中解码出一条指令。指令执行完毕后，判断Java虚拟机栈中是否还有帧，如果没有则退出循环，否则继续。
+
+一个方法执行到return指令时，会将此方法的栈帧从Java虚拟机栈中弹出。
+
+
+
+### 7.7 测试方法调用
+
+为命令行工具增加两个选项：
+
+* -verbose: class选项，可以控制是否把类加载信息输出到控制台。
+* -verbose: inst选项，用来控制是否把指令执行信息输出到控制台。
+
+```go
+type Cmd struct {
+	helpFlag	bool//用于指定是否显示帮助信息
+	versionFlag	bool//用于指定是否显示版本信息
+	verboseClassFlag	bool
+	verboseInstFlag	bool
+	clspath		string//用于指定类路径
+	Xjre		string//用于指定jre路径
+	class		string//用于指定主类
+	maxStackSize	uint//用于指定虚拟机栈的最大深度
+	args		[]string//用于指定其他参数
+}
+```
+
+写一个斐波那契数列计算
+
+```java
+public class Fiboo{
+
+    private static long dfs(long n){
+    	if(n <= 1)	{return n;}
+    	return dfs(n-1) + dfs(n-2);
+    }
+
+    public static void main(String[] args){
+        long m = dfs(30);
+        System.out.println(m);
+    }
+}
+```
+
+![image-20210309200853071](https://hyc-pic.oss-cn-hangzhou.aliyuncs.com/image-20210309200853071.png)
+
+测试成功。
+
+### 7.8 类初始化
+
+类初始化就是执行类的初始化方法<clinit>。类的初始化在以下情况出发：
+
+* 执行new指令创建类实例，但类还没被初始化。
+* 执行putstatic, getstatic指令存取类的静态变量，但声明该字段的类还没有被初始化。
+* 执行invokestatic调用类的静态方法，但声明该方法的类还没被初始化。
+* 当初始化一个类时，如果类的超类还没有被初始化，要先初始化类的超类。
+* 执行某些反射操作时。
+
+为了判断类是否已经初始化，需要给Class结构体添加一个字段：
+
+```go
+initStarted bool
+```
+
+类的初始化其实分为几个阶段，但是由于我们的类加载器还不够完善，所以先使用一个布尔状态表示就足够了。
+
+修改new指令：
+
+```go
+func (self *NEW) Execute(frame *rtda.Frame) {
+	cp := frame.Method().Class().ConstantPool()
+	classRef := cp.GetConstant(self.Index).(*heap.ClassRef)
+	class := classRef.ResolvedClass()
+	// todo: init class
+
+	if !class.InitStarted() {//如果还没初始化
+		frame.RevertNextPC()//让PC重新指向当前指令
+		base.InitClass(frame.Thread(), class)//初始化类
+		return
+	}
+
+	if class.IsInterface() || class.IsAbstract() {
+		panic("java.lang.InstantiationError")
+	}
+
+	ref := class.NewObject()
+	frame.OperandStack().PushRef(ref)
+}
+```
+
+其他指令类似。
+
+
+
